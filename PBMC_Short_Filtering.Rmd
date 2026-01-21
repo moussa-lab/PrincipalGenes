@@ -273,7 +273,7 @@ library(here)
 ##Read in the dataset
 ```{r read-data}
 
-input_file<-paste0(here(), "/PBMCSC1_smaller_count_matrix.csv")
+input_file<-paste0(here(), "/PBMCs10xfromSC1.csv")
 truth_file<-paste0(here(), "/PBMCsFromSC1_ClusterLabels.csv")
 name<-"PBMCSC1"
 

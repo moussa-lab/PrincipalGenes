@@ -274,7 +274,7 @@ library(here)
 ##Read in the dataset
 ```{r}
 
-input_file<-"/Pollen_smaller_count_matrix.csv"
+input_file<-"/Pollen_TPM_Matrix.csv.csv"
 truth_file<-"/Pollen_Labels.csv"
 name<-"Pollen"
 

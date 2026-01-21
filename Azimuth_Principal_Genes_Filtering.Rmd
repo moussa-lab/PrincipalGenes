@@ -275,7 +275,7 @@ library(here)
 ##Read in the dataset
 ```{r read-in-data}
 
-input_file<-paste0(here(), "/Azimuth_smaller_count_matrix.csv")
+input_file<-paste0(here(), "/Azimuth_filtereddatQC_basicQC_LibraryIDs.csv")
 truth_file<-paste0(here(), "/Azimuth_ClusterLabels.csv")
 name<-"Azimuth"
 

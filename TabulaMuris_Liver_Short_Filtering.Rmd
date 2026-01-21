@@ -273,7 +273,7 @@ library(here)
 
 ```{r}
 
-input_file<-"/Tabula_Muris_Liver_smaller_count_matrix.csv"
+input_file<-"/Tabula_Muris_Liver-counts.csv"
 truth_file<-"/Tabula_Muris_Liver_Labels.csv"
 name<-"Tabula_Muris_Liver"
 
