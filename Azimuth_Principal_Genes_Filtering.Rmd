@@ -1,0 +1,1011 @@
+---
+title: "Azimuth_Principal_Genes_Filtering"
+author: "Enos Kakwambi"
+date: "2025-11-05"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Install R packages
+```{r install-packages}
+pkgs <- c("here", "ggplot2", "dplyr", "Seurat", "skmeans", "mclust", "tidyr", "ggrepel", "stringr")
+to_install <- setdiff(pkgs, rownames(installed.packages()))
+if (length(to_install)) {
+  install.packages(to_install)
+}
+```
+
+#OPTIMAL PC SELECTION ALGO
+```{r quick-elbow}
+quick.elbow <- function(varpc,low=.08,max.pc=.9) {
+  ee <- varpc/sum(varpc) #proportinal eigenvalues
+  while(low>=max(ee)) { low <- low/2 } #when no principal component eigenvalues are large enough, cut low in half
+  lowie <- (ee<low) ; highie <- ee>low/8
+  low.ones <- which(lowie & highie)
+  others <- length(which(!lowie))
+  if(length(low.ones)>0) {
+    if(length(low.ones)==1) {
+      elbow <- low.ones
+    } else {
+      set <- ee[low.ones]
+      pc.drops <- abs(diff(set))/(set[1:(length(set)-1)])
+      infz <- is.infinite(pc.drops)
+      #print(pc.drops)
+      elbow <- which(pc.drops==max(pc.drops[!infz],na.rm=T))[1]+others
+    }
+  } else {
+    # if somehow there are no small eigenvalues, just choose the elbow as the second last
+    cat("no eigenvalues were significantly smaller than the previous\n")
+    elbow <- length(ee)
+  }
+  if(tail(cumsum(ee[1:elbow]),1)>max.pc) {
+    elbow <- which(cumsum(ee)>max.pc)[1]-1
+  }
+  if(elbow<1) {
+    warning("elbow calculation failed, return zero")
+    return(0)
+  }
+  elbow<-elbow + 1 # include last to be sure ..
+  names(elbow) <- NULL
+  return(elbow)
+}
+```
+
+#GENES FILTERING
+```{r gene-filter}
+library(stringr)
+genes_filter <- function(df, filters = c("IgFilter", "TrFilter", "riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter")) {
+  #ensure gene names are uppercase for consistent matching
+  geneNames <- toupper(rownames(df))
+  GenesToFilterOut <- integer(0)
+  if(is.null(filters)){
+    return(df)
+  }
+
+  #immunoglobulin genes (IGHV, IGKV)
+  if ("IgFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "IGHV") | str_starts(geneNames, "IGKV"))
+    )
+  }
+
+  #t-cell receptor genes (TRAV, TRBV)
+  if ("TrFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "TRAV") | str_starts(geneNames, "TRBV"))
+    )
+  }
+
+  #ribosomal genes (RPL, RPS)
+  if ("riboFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "RPL") | str_starts(geneNames, "RPS"))
+    )
+  }
+
+  #mitochondrial genes (MT-)
+  if ("mtFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "MT-"))
+    )
+  }
+
+  #GM-prefixed genes
+  if ("gmFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "GM"))
+    )
+  }
+
+  #genes ending with RIK
+  if ("rikFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_ends(geneNames, "RIK"))
+    )
+  }
+
+  #genes starting with "\\.", ENSG, or a regex pattern like XX000000
+  if ("dotFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(
+        str_starts(geneNames, "\\.") |
+        str_starts(geneNames, "ENSG") |
+        str_detect(geneNames, "^[A-Z]{2}\\d{6}")
+      )
+    )
+  }
+
+  #remove duplicate indices
+  GenesToFilterOut <- unique(GenesToFilterOut)
+
+  #return filtered dataframe
+  if (length(GenesToFilterOut) > 0) {
+    filtered_df <- df[-GenesToFilterOut, , drop = FALSE]
+  } else {
+    filtered_df <- df  # No genes to filter, return original
+  }
+
+  list(
+    counts=filtered_df,
+    filtered=setdiff(rownames(df), rownames(filtered_df))
+  )
+}
+```
+
+#PRINCIPAL GENES ALGO
+```{r main-algo}
+principalgenes<- function(data = NULL, pcs = -1, cut = -1, filters=c("IgFilter", "TrFilter", "riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter")) {
+
+  message(length(rownames(data)), ", ", length(colnames(data)))
+  message(paste0(filters))
+  # Check if data is provided
+  if (is.null(data)) {
+    stop("Error: 'data' must be provided.")
+  }
+
+  if(cut == -1){
+    cut = 0.25
+  }
+  
+  message("filtering genes based on specifications")
+  data<-genes_filter(count_matrix, filters)
+  filtered_genes<-data$filtered
+  data<-data$counts
+  message("Post Filtering Dataset Dimensions: Rows: ", length(rownames(data)), ", Columns: ", length(colnames(data)))
+  
+  zero_cols<-which(colSums(data) == 0)
+  zero_var_rows <- apply(data, 1, var, na.rm = TRUE) == 0
+  zero_var_rows<-which(zero_var_rows)
+
+  message("Remove zero rows and remove zero columns until none are left")
+  while(length(zero_cols) != 0 || length(zero_var_rows)!=0){
+    zero_cols<-which(colSums(data) == 0)
+    if(length(zero_cols) > 0) {
+      data<-data[, -zero_cols]
+    }
+    zero_var_rows <- apply(data, 1, var, na.rm = TRUE) == 0
+    zero_var_rows<-which(zero_var_rows)
+    if(length(zero_var_rows) > 0) {
+      data<-data[-zero_var_rows, ]
+    }
+    message("Dataset Dimensions after removing zero rows and columns: Rows: ", length(rownames(data)), ", Columns: ", length(colnames(data)))
+  }
+  
+  message("Calculating optimal number of PCs via elbow method:")
+  if(pcs == -1 || pcs >= 20 || pcs >= 0.05*ncol(data)){
+    temp<- irlba::prcomp_irlba(t(data), n = min(20, 0.05*ncol(data)), retx = TRUE, center = TRUE, scale. = TRUE)
+    eig = temp$sdev^2
+    pcs = quick.elbow(eig)
+    rm(eig, temp)
+  }
+
+  message("Values set: pcs = ", pcs, ", chosen cutoff = ", cut)
+
+  #transpose the data to have genes as columns and cells as rows
+  rotated_output <- irlba::prcomp_irlba(t(data), n = pcs, retx = TRUE, center = TRUE, scale. = TRUE)
+
+  #prepare to represent results
+  summary<- summary(rotated_output)
+  loadings <- rotated_output$rotation
+  rownames(loadings) <- rownames(data) # Associate gene names with loadings
+
+  #compute variance explained by each PC
+  eigenvalues <- (rotated_output$sdev)^2
+  prop_var <- eigenvalues / sum(eigenvalues)
+  temp_obj <- data.frame(x=colnames(loadings), y = prop_var)
+
+  #plot PCA results
+  graph1<- ggplot2::ggplot(temp_obj, ggplot2::aes(x = x, y = y * 100)) +
+    ggplot2::geom_bar(stat = "identity", fill = "skyblue") +
+    ggplot2::geom_text(ggplot2::aes(label= round(y*100, 2)), vjust = +1.5)+
+    ggplot2::labs(
+      x = "Principal Components",
+      y = "Percentage (%)",
+      title = "Proportion of Variance Each PC explains"
+    ) +
+    ggplot2::theme_minimal()
+  plot(graph1)
+
+  #calculate absolute values of loadings and contribution percentages
+  loadings <- abs(loadings)
+  sumload <- colSums(loadings)
+  percent_cont <- loadings / sumload
+
+  #calculate total contribution to variance for each gene
+  scaled_contr<-sweep(percent_cont, 2, prop_var, FUN = "*")
+  tot_contr <- rowSums(scaled_contr)
+  
+  #select genes with total contribution in cut percentile
+  message("starting the cutoff process")
+  cumulative_gps<- 0
+  if (cut == 1){
+    result<- sort(decreasing = TRUE, tot_contr)
+  } else {
+
+    for (i in 1:length(tot_contr)){
+      result<-list()
+      if (is.na(tot_contr[i]) || is.infinite(tot_contr[i])){
+        stop("Error: contribution calculation produced NA or infinite values. Please check the input data.")
+      }
+
+      result[[i]] <- as.numeric(tot_contr[i])
+      cumulative_gps <- cumulative_gps + as.numeric(tot_contr[i])
+      if (cumulative_gps >= cut){
+        break
+      }
+    }
+    result<-unlist(result)
+  }
+
+  # Log transformation for top genes' contributions
+  logcont <- -10 * log10(result)
+
+  # Return results
+  list(
+    summary,
+    log_contributions = logcont, #-10*log10(gps), larger values imply less contribution
+    top_genes = result, #ordered top selected genes
+    rotated_output = rotated_output, #pca output
+    filtered = filtered_genes, #list of genes filtered out
+    count_matrix = data #filtered count matrix for use elsewhere
+  )
+
+}
+```
+
+#Global Library
+```{r}
+library(here)
+```
+
+#AZIMUTH DATASET
+##Read in the dataset
+```{r read-in-data}
+
+input_file<-paste0(here(), "/Azimuth_filtereddatQC_basicQC_LibraryIDs.csv")
+truth_file<-paste0(here(), "/Azimuth_ClusterLabels.csv")
+name<-"Azimuth"
+
+count_matrix<-read.csv(input_file, row.names = 1)
+
+rownames(count_matrix)<-gsub("-", "_", rownames(count_matrix))
+colnames(count_matrix)<-gsub("\\.", "-", colnames(count_matrix))
+```
+
+##Get principal genes and highlight them on the log_var_mean_plot
+```{r principal-genes-running}
+
+#plot variance vs mean expression
+library(ggplot2)
+library(dplyr)
+
+row_means<-rowMeans(count_matrix, na.rm=TRUE)
+row_var<- apply(count_matrix, 1, var, na.rm=TRUE)
+
+log_var_mean_df<-tibble(
+  gene_id=rownames(count_matrix),
+  log_mean = log10(row_means +  1),
+  log_var = log10(row_var + 1)
+)
+
+set.seed(12345)
+principal_genes_results <- principalgenes(count_matrix, cut = 1, filters = c("riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter"))
+filtered_counts<-principal_genes_results$count_matrix
+top_100_genes<-names(principal_genes_results$top_genes[1:50])
+```
+##PCA PLOT
+```{r plot-pca}
+PC1_and_PC2<-as.data.frame(principal_genes_results$rotated_output$x, row.names = colnames(filtered_counts))
+
+#get true labels
+full_true_labels<-read.csv(truth_file)
+full_true_labels$cells<-gsub("\\.", "-", full_true_labels$cells)
+full_true_labels$numeric_labels<-as.numeric(factor(
+  full_true_labels$labels,
+  levels = unique(full_true_labels$labels)
+))
+true_labels<-subset(full_true_labels, cells %in% colnames(filtered_counts))
+PC1_and_PC2$labels<-true_labels$labels
+PC1_and_PC2$numeric_labels <- as.numeric(factor(
+  PC1_and_PC2$label,
+  levels = unique(true_labels$labels)
+))
+
+#PCA PLOT
+ggplot(PC1_and_PC2, aes(x=PC1, y=PC2, color=labels))+
+  geom_point(size=3)+
+  scale_color_brewer(palette="Spectral",
+                     name = "Label") +
+  theme_minimal()+
+  labs(x = "PC1", y = "PC2", title="Azimuth PCA Plot")+
+  theme(plot.title=element_text(hjust=0.5))
+
+ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/Azimuth_Results/Azimuth_PCA_Plot.jpg"),, 
+     dpi = 300)
+```
+
+##SK_MEANS CLUSTERING USING CUMULATIVE SCORE
+```{r sk-means-clustering} 
+source(paste0(here(), "/clSensitivity.R"))
+library(skmeans)
+
+# Define the thresholds (scaled values corresponding to 5%, 10%, ... 100%)
+thresholds <- seq(10, 50, by = 1)
+
+selectedGeneList <- list()  # This will store the cumulative gene lists for each threshold.
+current_gene_list <- list()       # This accumulates genes as we iterate.
+currentpropsum <- 0               # Running sum of scaled values.
+threshold_index <- 1              # To track which threshold we're currently targeting.
+
+# Loop over each gene in principal_genes_results$top_genes
+for(i in seq_along(principal_genes_results$top_genes)){
+  
+  # Append the current gene (its value, with name retained) to the cumulative gene list.
+  current_gene_list <- append(current_gene_list, principal_genes_results$top_genes[i])
+  
+  # Update the running sum using the scaled value.
+  currentpropsum <- currentpropsum + principal_genes_results$top_genes[i] * 100
+  
+  # Check if we've reached or exceeded the current threshold.
+  if(currentpropsum >= thresholds[threshold_index]){
+    # Store the current cumulative gene list at the proper index.
+    selectedGeneList[[threshold_index]] <- current_gene_list
+    
+    # Optionally, print some info for debugging.
+    print(paste("Threshold", thresholds[threshold_index], "reached at index", i))
+    
+    # Move on to the next threshold.
+    threshold_index <- threshold_index + 1
+    
+    # If we've filled all thresholds, exit the loop.
+    if(threshold_index > length(thresholds)){
+      break
+    }
+  }
+}
+
+num_genes <- list()
+for (i in seq_along(selectedGeneList)){
+  num_genes[[i]]<-length(selectedGeneList[[i]])
+}
+num_genes<-unlist(num_genes)
+
+sumprop<- 0
+for (i in seq_along(principal_genes_results$top_genes)){
+  sumprop <- sumprop + principal_genes_results$top_genes[i]*100
+}
+
+true_labels_vector <- setNames(PC1_and_PC2$numeric_labels, row.names(PC1_and_PC2))
+k_cls <- max(true_labels_vector)
+
+PG_groups_sk <- list()
+PG_results_sk <-list()
+
+# SKmeans clustering
+set.seed(12345)
+for(i in 1:length(selectedGeneList)){
+  set.seed(12345)
+  PG_groups_sk[[i]]<-skmeans(x = t(log2(count_matrix[names(selectedGeneList[[i]]),] + 1)) , k = k_cls, control = list(verbose = FALSE))$cluster
+  print(i)
+}
+#PG_groups_sk[[20]]<-skmeans(x=t(log2(count_matrix + 1)), k=k_cls, control = list(verbose = FALSE))$cluster
+
+for (i in 1:length(selectedGeneList)){
+  PG_results_sk[[i]] <- clustSensitivity(PG_groups_sk[[i]], true_labels_vector, as.character(1:k_cls))
+}
+
+labels_vs_clust <- data.frame(
+    PG_labels     = PG_groups_sk[[1]]
+)
+labels_vs_clust$truth_labels <- true_labels_vector[rownames(labels_vs_clust)]
+celltype_vec <- setNames(full_true_labels$labels, full_true_labels$cells)
+labels_vs_clust$celltype <- celltype_vec[rownames(labels_vs_clust)]
+write.csv(labels_vs_clust, paste0(here(), "/Data_Hold/", name, "_truth_vs_clustering.csv"))
+smaller_count_matrix<-count_matrix[names(principal_genes_results$top_genes[1:100]),]
+write.csv(smaller_count_matrix, paste0(here(), "/Data_Hold/", name, "_smaller_count_matrix.csv"))
+
+```
+
+##SK_MEANS CLUSTERING USING HVGS
+```{r}
+library(Seurat)
+
+seuratObject<- CreateSeuratObject(counts = as.matrix(count_matrix))
+Idents(seuratObject) <- "All_Cells"
+norm_seuratObject <- NormalizeData(seuratObject)
+seuratObject<- FindVariableFeatures(norm_seuratObject, selection.method = "dispersion", nfeatures = length(row.names(count_matrix))) #dispersion values is log(variance/mean)
+HVGs <- VariableFeatures(seuratObject) #Vector of descending order HVGs
+HVGs<-gsub("-", "_", HVGs)
+
+positions<-match(HVGs, rownames(count_matrix))
+
+scored_hvg<- seuratObject[["RNA"]]@meta.data$vf_disp_data_mvp.dispersion[positions]
+names(scored_hvg) <- HVGs
+scored_hvg[is.na(scored_hvg)] <- 0
+scored_hvg <- sort(decreasing = TRUE, scored_hvg)
+
+#COMPARE HVGs TO PGs list
+setdiff(HVGs, names(unlist(selectedGeneList)))
+
+# SKmeans clustering
+HVG_groups_sk <- list()
+HVG_results_sk <-list()
+
+set.seed(12345)
+for(i in seq_along(num_genes)){
+  set.seed(12345)
+  HVG_groups_sk[[i]]<-skmeans(x = t(log2(count_matrix[HVGs[1:as.numeric(num_genes[i])], ] + 1)) , k = k_cls, control = list(nruns=1, verbose = FALSE))$cluster
+  print(num_genes[i])
+}
+#HVG_groups_sk[[20]]<-skmeans(x=t(log2(count_matrix + 1)), k=k_cls, control = list(verbose = FALSE))$cluster
+
+true_labels_vector <- setNames(full_true_labels$numeric_labels, full_true_labels$cell_id)
+for (i in seq_along(num_genes)){
+  HVG_results_sk[[i]] <- clustSensitivity(HVG_groups_sk[[i]], true_labels_vector, as.character(1:k_cls))
+}
+
+```
+
+##SK MEANS CLUSTERING USING UNION OF HVGS AND PBMCS AT EACH POINT
+```{r}
+pg_hvg_union<-list()
+
+for(i in seq_along(selectedGeneList)){
+  pg_hvg_union[[i]]<-unique(union(names(selectedGeneList[[i]]), HVGs[1:length(selectedGeneList[[i]])]))
+}
+
+# SKmeans clustering
+Union_groups_sk <- list()
+Union_results_sk <-list()
+
+# SKmeans clustering
+for(i in 1:length(selectedGeneList)){
+  set.seed(12345)
+  Union_groups_sk[[i]]<-skmeans(x = t(log2(count_matrix[pg_hvg_union[[i]],] + 1)) , k = k_cls, control = list(verbose = FALSE))$cluster
+  print(i)
+}
+#Union_groups_sk[[20]]<-skmeans(x=t(log2(count_matrix + 1)), k=k_cls, control = list(verbose = FALSE))$cluster
+
+for (i in 1:length(selectedGeneList)){
+  Union_results_sk[[i]] <- clustSensitivity(Union_groups_sk[[i]], true_labels_vector, as.character(1:k_cls))
+}
+
+```
+
+##PLOT CLUSTERING RESULTS COMPARING HVGS AND CUMULATIVE SCORE
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(mclust)
+
+RowNames <- list()
+pg_points_sk <- list()
+hvg_points_sk <- list()
+union_points_sk<-list()
+
+for(i in 1: length(PG_results_sk)){
+  pg_points_sk[[i]] <- PG_results_sk[[i]][1,2]
+  RowNames[[i]] <- i
+}
+
+for(i in 1: length(HVG_results_sk)){
+  hvg_points_sk[[i]] <- HVG_results_sk[[i]][1,2]
+}
+
+for (i in 1:length(Union_results_sk)){
+  union_points_sk[[i]]<-Union_results_sk[[i]][1,2]
+}
+
+points_sk <- data.frame(
+  row.names = unlist(RowNames),
+  PG_sensitivity=as.numeric(unlist(pg_points_sk)),
+  HVG_sensitivity = as.numeric(unlist(hvg_points_sk)),
+  PG_HVG_Union = as.numeric(unlist(union_points_sk)),
+  thresholds =as.numeric(thresholds),
+  num_genes = as.integer(num_genes),
+  union_num_genes = as.integer(sapply(pg_hvg_union, length))
+)
+
+# Long (tidy) format for ggplot
+plot_df1 <- points_sk %>%
+  pivot_longer(
+    cols = c(PG_sensitivity, HVG_sensitivity, PG_HVG_Union),
+    names_to = "metric",
+    values_to = "sensitivity"
+  )
+
+#control legend order
+plot_df1$metric <- factor(plot_df1$metric,
+                         levels = c("PG_sensitivity","HVG_sensitivity","PG_HVG_Union"))
+
+#add labels for union numbers
+plot_df1$label_val <- NA
+plot_df1$label_val[plot_df1$metric == "PG_sensitivity"] <- plot_df1$num_genes[plot_df1$metric == "PG_sensitivity"]
+plot_df1$label_val[plot_df1$metric == "PG_HVG_Union"] <- plot_df1$union_num_genes[plot_df1$metric == "PG_HVG_Union"]
+
+ggplot(plot_df1, aes(x = thresholds, y = sensitivity, color = metric)) +
+  geom_point(size = 2) +
+
+  # PG labels
+  geom_text(
+    data = subset(plot_df1, metric == "PG_sensitivity"),
+    aes(label = label_val),
+    color = "#1BB7D8", vjust = +2, size = 3, check_overlap = TRUE
+  ) +
+
+  # Union labels
+  geom_text(
+    data = subset(plot_df1, metric == "PG_HVG_Union"),
+    aes(label = label_val),
+    color = "darkgreen", vjust = -2, size = 3, check_overlap = TRUE
+  ) +
+
+  geom_smooth(
+    method = "loess",
+    method.args = list(span = 1, degree = 1, surface = "direct"),
+    se = FALSE
+  ) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = "Cumulative Score",
+       y = "Clustering Sensitivity",
+       color = "Gene Selection Method",
+       title = "SK-means Clustering Sensitivity for Azimuth Dataset: Loess Regression") +
+  scale_color_manual(
+    breaks = c("PG_sensitivity","HVG_sensitivity","PG_HVG_Union"),
+    values = c(
+      "PG_sensitivity"  = "#1BB7D8",
+      "HVG_sensitivity" = "#E55B1E",
+      "PG_HVG_Union" = "#2C9F45"
+    ),
+    labels = c(
+      "PG_sensitivity"  = "Principal Genes",
+      "HVG_sensitivity" = "Seurat's HVG",
+      "PG_HVG_Union" = "HVG_PG_Union"
+    )
+  ) +
+  theme_minimal()
+
+ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/Azimuth_Results/Short_Azimuth_PG_HVG_UNION_Sensitivity.jpg"),, 
+     dpi = 300)
+
+#adjustedRandIndex
+pg_rand<-list()
+hvg_rand<-list()
+union_rand<-list()
+for (i in 1:length(PG_groups_sk)){
+  pg_rand[[i]]<-adjustedRandIndex(x=PG_groups_sk[[i]], y=true_labels_vector)
+  hvg_rand[[i]]<-adjustedRandIndex(x=HVG_groups_sk[[i]], y=true_labels_vector)
+  union_rand[[i]]<-adjustedRandIndex(x=Union_groups_sk[[i]], y=true_labels_vector)
+}
+
+points_sk <- data.frame(
+  row.names = unlist(RowNames),
+  PG_randIndex=as.numeric(unlist(pg_rand)),
+  HVG_randIndex = as.numeric(unlist(hvg_rand)),
+  PG_HVG_UnionRand = as.numeric(unlist(union_rand)),
+  thresholds =as.numeric(thresholds),
+  num_genes = as.integer(num_genes),
+  union_num_genes = as.integer(sapply(pg_hvg_union, length))
+)
+
+# Long (tidy) format for ggplot
+plot_df <- points_sk %>%
+  pivot_longer(
+    cols = c(PG_randIndex, HVG_randIndex, PG_HVG_UnionRand),
+    names_to = "metric",
+    values_to = "adjustedRandIndex"
+  )
+
+#control legend order
+plot_df$metric <- factor(plot_df$metric,
+                         levels = c("PG_randIndex","HVG_randIndex","PG_HVG_UnionRand"))
+
+#add labels for union numbers
+plot_df$label_val <- NA
+plot_df$label_val[plot_df$metric == "PG_randIndex"] <- plot_df$num_genes[plot_df$metric == "PG_randIndex"]
+plot_df$label_val[plot_df$metric == "PG_HVG_UnionRand"] <- plot_df$union_num_genes[plot_df$metric == "PG_HVG_UnionRand"]
+
+# Plot both on the same axes
+
+ggplot(plot_df, aes(x = thresholds, y = adjustedRandIndex, color = metric)) +
+  geom_point(size = 2) +
+
+  # PG labels
+  geom_text(
+    data = subset(plot_df, metric == "PG_randIndex"),
+    aes(label = label_val),
+    color = "#1BB7D8", vjust = +2, size = 3, check_overlap = TRUE
+  ) +
+
+  # Union labels
+  geom_text(
+    data = subset(plot_df, metric == "PG_HVG_UnionRand"),
+    aes(label = label_val),
+    color = "darkgreen", vjust = -2, size = 3, check_overlap = TRUE
+  ) +
+
+  geom_smooth(
+    method = "loess",
+    method.args = list(span = 1, degree = 1, surface = "direct"),
+    se = FALSE
+  ) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = "Cumulative Score",
+       y = "Rand Index",
+       color = "Gene Selection Method",
+       title = "SK-means Rand Index for Azimuth Dataset: Loess Regression") +
+  scale_color_manual(
+    breaks = c("PG_randIndex","HVG_randIndex","PG_HVG_UnionRand"),
+    values = c(
+      "PG_randIndex"  = "#1BB7D8",
+      "HVG_randIndex" = "#E55B1E",
+      "PG_HVG_UnionRand" = "#2C9F45"
+    ),
+    labels = c(
+      "PG_randIndex"  = "Principal Genes",
+      "HVG_randIndex" = "Seurat's HVG",
+      "PG_HVG_UnionRand" = "HVG_PG_Union"
+    )
+  ) +
+  theme_minimal()
+
+ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/Azimuth_Results/Short_Azimuth_PG_HVG_UNION_RandIndex.jpg"),, 
+     dpi = 300)
+
+```
+##NO OUTLIERS
+```{r}
+add_loess_ci <- function(df, span = 1, degree = 1, surface = "direct") {
+  mod <- loess(sensitivity ~ thresholds, data = df,
+               span = span, degree = degree, surface = surface)
+  pr  <- predict(mod, newdata = data.frame(thresholds = df$thresholds), se = TRUE)
+
+  df$fit   <- pr$fit
+  df$se    <- pr$se.fit
+  df$lower <- df$fit - 1.96 * df$se
+  df$upper <- df$fit + 1.96 * df$se
+  df$outlier <- df$sensitivity < df$lower | df$sensitivity > df$upper
+  df
+}
+
+# Apply per metric
+plot_df1 <- plot_df1 %>%
+  group_by(metric) %>%
+  group_modify(~ add_loess_ci(.x, span = 1, degree = 1, surface = "direct")) %>%
+  ungroup()
+
+# Filter out outliers
+plot_df1_filtered <- plot_df1 %>% filter(!outlier)
+
+# Now plot the filtered points only
+ggplot(plot_df1_filtered, aes(x = thresholds, y = sensitivity, color = metric)) +
+  geom_point(size = 2) +
+
+  # PG labels
+  geom_text(
+    data = subset(plot_df1_filtered, metric == "PG_sensitivity"),
+    aes(label = label_val),
+    color = "#1BB7D8", vjust = +2, size = 3, check_overlap = TRUE
+  ) +
+
+  # Union labels
+  geom_text(
+    data = subset(plot_df1_filtered, metric == "PG_HVG_Union"),
+    aes(label = label_val),
+    color = "darkgreen", vjust = -2, size = 3, check_overlap = TRUE
+  ) +
+
+  geom_smooth(
+    method = "loess",
+    method.args = list(span = 1, degree = 1, surface = "direct"),
+    se = FALSE
+  ) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = "Cumulative Score",
+       y = "Clustering Sensitivity",
+       color = "Gene Selection Method",
+       title = "SK-means Clustering Sensitivity for Azimuth Dataset: Loess Regression Outliers Removed") +
+  scale_color_manual(
+    breaks = c("PG_sensitivity","HVG_sensitivity","PG_HVG_Union"),
+    values = c(
+      "PG_sensitivity"  = "#1BB7D8",
+      "HVG_sensitivity" = "#E55B1E",
+      "PG_HVG_Union"    = "#2C9F45"
+    ),
+    labels = c(
+      "PG_sensitivity"  = "Principal Genes",
+      "HVG_sensitivity" = "Seurat's HVG",
+      "PG_HVG_Union"    = "HVG_PG_Union"
+    )
+  ) +
+  theme_minimal()
+
+ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/Azimuth_Results/Azimuth_PG_HVG_UNION_No_Outliers_Sensitivity.jpg"),, 
+     dpi = 300)
+
+add_loess_ci <- function(df, span = 1, degree = 1, surface = "direct") {
+  mod <- loess(adjustedRandIndex ~ thresholds, data = df,
+               span = span, degree = degree, surface = surface)
+  pr  <- predict(mod, newdata = data.frame(thresholds = df$thresholds), se = TRUE)
+
+  df$fit   <- pr$fit
+  df$se    <- pr$se.fit
+  df$lower <- df$fit - 1.96 * df$se
+  df$upper <- df$fit + 1.96 * df$se
+  df$outlier <- df$adjustedRandIndex < df$lower | df$adjustedRandIndex > df$upper
+  df
+}
+
+# Apply per metric
+plot_df <- plot_df %>%
+  group_by(metric) %>%
+  group_modify(~ add_loess_ci(.x, span = 1, degree = 1, surface = "direct")) %>%
+  ungroup()
+
+# Filter out outliers
+plot_df_filtered <- plot_df %>% filter(!outlier)
+
+# Now plot the filtered points only
+ggplot(plot_df_filtered, aes(x = thresholds, y = adjustedRandIndex, color = metric)) +
+  geom_point(size = 2) +
+
+  # PG labels
+  geom_text(
+    data = subset(plot_df_filtered, metric == "PG_randIndex"),
+    aes(label = label_val),
+    color = "#1BB7D8", vjust = +2, size = 3, check_overlap = TRUE
+  ) +
+
+  # Union labels
+  geom_text(
+    data = subset(plot_df_filtered, metric == "PG_HVG_UnionRand"),
+    aes(label = label_val),
+    color = "darkgreen", vjust = -2, size = 3, check_overlap = TRUE
+  ) +
+
+  geom_smooth(
+    method = "loess",
+    method.args = list(span = 1, degree = 1, surface = "direct"),
+    se = FALSE
+  ) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = "Cumulative Score",
+       y = "Rand Index",
+       color = "Gene Selection Method",
+       title = "SK-means Clustering Rand Index for Azimuth Dataset: Loess Regression Outliers Removed") +
+  scale_color_manual(
+    breaks = c("PG_randIndex","HVG_randIndex","PG_HVG_UnionRand"),
+    values = c(
+      "PG_randIndex"  = "#1BB7D8",
+      "HVG_randIndex" = "#E55B1E",
+      "PG_HVG_UnionRand"    = "#2C9F45"
+    ),
+    labels = c(
+      "PG_randIndex"  = "Principal Genes",
+      "HVG_randIndex" = "Seurat's HVG",
+      "PG_HVG_UnionRand"    = "HVG_PG_Union"
+    )
+  ) +
+  theme_minimal()
+
+ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/Azimuth_Results/Azimuth_PG_HVG_UNION_No_Outliers_RandIndex.jpg"),, 
+     dpi = 300)
+
+```
+
+##PRINCIPAL GENES AND HVGS COMPARISON
+```{r}
+#Common genes between TOP 100 Principal Genes results and Highly Variable Genes
+common_gene_names<- intersect(names(principal_genes_results$top_genes[1:100]), names(scored_hvg[1:100]))
+temp<-principal_genes_results$top_genes[common_gene_names]
+common_gene_names<-names(temp)
+
+pg_only_gene_names <- setdiff(names(principal_genes_results$top_genes[1:100]), common_gene_names)
+temp<-principal_genes_results$top_genes[pg_only_gene_names]
+pg_only_gene_names<-names(temp)
+
+hvg_only_gene_names <-setdiff(names(scored_hvg[1:100]), common_gene_names)
+temp<-scored_hvg[hvg_only_gene_names]
+hvg_only_gene_names<-names(temp)
+
+#Ranks of Principal Genes based on scores
+pps_ranks <- rank(-as.numeric(principal_genes_results$top_genes))
+names(pps_ranks) <- names(principal_genes_results$top_genes)
+
+#Ranks of HVGs based on scaled dispersion score
+hvg_ranks <- rank(-as.numeric(scored_hvg))
+names(hvg_ranks) <- names(scored_hvg)
+
+#Variance of each gene
+variance_values <- apply(count_matrix, 1, var, na.rm = TRUE)
+variance_values <- sort(decreasing = TRUE, variance_values)
+
+#Mean expression of each gene
+mean_values <- apply(count_matrix, 1, mean, na.rm = TRUE)
+mean_values <- sort(decreasing = TRUE, mean_values)
+
+#Compare the ranks of intersecting genes
+intersect_df <- data.frame(
+  PPS_rank = pps_ranks[common_gene_names],
+  HVG_rank = hvg_ranks[common_gene_names],
+  Variance = round(variance_values[common_gene_names], 4),
+  Mean = round(mean_values[common_gene_names], 4)
+)
+
+
+#Compare the scores of the top100 Principal Genes to their rank in the top 100 HVGs and their mean and variance scores
+raw_scores_df <- data.frame(
+  PPS_score_percent = principal_genes_results$top_genes[1:100]*100,
+  HVG_rank = hvg_ranks[names(principal_genes_results$top_genes[1:100])],
+  Variance = round(variance_values[names(principal_genes_results$top_genes[1:100])], 4),
+  Mean = round(mean_values[names(principal_genes_results$top_genes[1:100])], 4)
+)
+
+write.csv(intersect_df, file = paste0(here(), "/Post_Log2_Norm/Filtered/Azimuth_Results/Azimuth_PPS_HVG_Variance_Mean_Intersect.csv"))
+write.csv(raw_scores_df, file = paste0(here(), "/Post_Log2_Norm/Filtered/Azimuth_Results/Azimuth_PPS_HVG_Variance_Mean_Top100.csv"))
+```
+
+##FINAL PLOTS FROM HVG-only genes and PPS-only genes
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+
+#plot dispersion vs pps
+genes <- rownames(count_matrix)
+
+graphdf <- data.frame(
+  genes = genes,
+  Dispersion = scored_hvg[match(genes, names(scored_hvg))],
+  PPS = principal_genes_results$top_genes[match(genes, names(principal_genes_results$top_genes))]
+)
+
+
+#Compare PPS and Dispersion
+pg20   <- head(pg_only_gene_names[pg_only_gene_names %in% graphdf$genes], 20)
+hvg20  <- head(hvg_only_gene_names[hvg_only_gene_names %in% graphdf$genes], 20)
+both20 <- head(common_gene_names[common_gene_names %in% graphdf$genes], 20)
+
+# Build comparison df with categories
+comparison_df <- graphdf %>%
+  mutate(
+    category = case_when(
+      genes %in% pg20   ~ "PG only",
+      genes %in% hvg20  ~ "HVG only",
+      genes %in% both20 ~ "Both PG & HVG",
+      TRUE              ~ "Other"
+    ),
+    category = factor(category, levels = c("PG only", "HVG only", "Both PG & HVG", "Other"))
+  ) %>%
+  filter(is.finite(PPS), is.finite(Dispersion))
+
+# Separate for background vs highlights
+other_df     <- comparison_df %>% filter(category == "Other")
+highlight_df <- comparison_df %>% filter(category != "Other")
+
+# Plot: PPS vs Dispersion with highlighted top-20s
+ggplot() +
+  # Background points
+  geom_point(
+    data = other_df,
+    aes(x = PPS, y = Dispersion),
+    color = "grey70", alpha = 0.4, size = 1.6
+  ) +
+  # Highlighted categories
+  geom_point(
+    data = highlight_df,
+    aes(x = PPS, y = Dispersion, color = category),
+    alpha = 0.7, size = 1.8
+  ) +
+  # Labels for highlighted genes
+  ggrepel::geom_text_repel(
+    data = highlight_df,
+    aes(x = PPS, y = Dispersion, label = genes, color = category),
+    size = 2.5, max.overlaps = Inf, show.legend = FALSE
+  ) +
+  labs(
+    x = "Principal Score",
+    y = "Dispersion",
+    title = "PBMC: Principal Score vs Dispersion — Top 20 highlighted by method"
+  ) +
+  theme_minimal() +
+  scale_color_manual(
+    values = c(
+      "PG only"       = "#1BB7D8",
+      "HVG only"      = "#E55B1E",
+      "Both PG & HVG" = "#2C9F45"
+    )
+  ) +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/Azimuth_Results/Azimuth_PS_Dispersion_Comparison.jpg"),, 
+     dpi = 300)
+
+
+# Build comparison_df with all categories
+comparison_df <- log_var_mean_df %>%
+  mutate(
+    category = case_when(
+      gene_id %in% pg_only_gene_names[1:20]   ~ "PG only",
+      gene_id %in% hvg_only_gene_names[1:20]  ~ "HVG only",
+      gene_id %in% common_gene_names[1:20]    ~ "Both PG & HVG",
+      TRUE ~ "Other"
+    )
+  )
+
+# Separate dataframes
+other_df   <- comparison_df %>% filter(category == "Other")
+highlight_df <- comparison_df %>% filter(category != "Other")
+
+# Plot
+ggplot() +
+  # Background grey points (no legend)
+  geom_point(
+    data = other_df,
+    aes(x = log_mean, y = log_var),
+    color = "grey70", alpha = 0.4, size = 1.6, inherit.aes = FALSE
+  ) +
+  # Highlighted points with legend
+  geom_point(
+    data = highlight_df,
+    aes(x = log_mean, y = log_var, color = category),
+    alpha = 0.7, size = 1.8
+  ) +
+  # Labels for all highlight genes
+  ggrepel::geom_text_repel(
+    data = highlight_df,
+    aes(x = log_mean, y = log_var, label = gene_id, color = category),
+    size = 2.5, max.overlaps = Inf, show.legend = FALSE
+  ) +
+  labs(
+    x = "log10 mean expression",
+    y = "log10 variance",
+    title = "Azimuth Top 20 genes: Log10 mean expression vs variance"
+  ) +
+  theme_minimal() +
+  scale_color_manual(
+    values = c(
+      "PG only"       = "#1BB7D8",
+      "HVG only"      = "#E55B1E",
+      "Both PG & HVG" = "#2C9F45"
+    )
+  ) +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  geom_abline(slope = 1, intercept = 0, linetype = 2, color = "red")
+
+ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/Azimuth_Results/Azimuth_PG_HVG_INTERSECT_Log10_mean_variance.jpg"),, 
+     dpi = 300)
+
+##VIOLIN PLOT
+
+VlnPlot(norm_seuratObject, features=pg_only_gene_names[1:9]) & 
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank())
+ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/Azimuth_Results/Azimuth_PG_Only_Violin_Plot.jpg"),, 
+     dpi = 300)
+
+VlnPlot(norm_seuratObject, features=hvg_only_gene_names[1:9]) & 
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank())
+ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/Azimuth_Results/Azimuth_HVG_Only_Violin_Plot.jpg"),, 
+     dpi = 300)
+
+VlnPlot(norm_seuratObject, features=common_gene_names[1:9]) & 
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank())
+ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/Azimuth_Results/Azimuth_PG_HVG_INTERSECT_Violin_Plot.jpg"),, 
+     dpi = 300)
+```
