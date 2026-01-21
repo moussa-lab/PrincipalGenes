@@ -396,8 +396,6 @@ k_cls <- max(true_labels_vector)
 # k_cls <- 3
 PG_groups_sk <- list()
 PG_results_sk <-list()
-PG_groups_lv <- list()
-PG_results_lv <-list()
 
 submat<-count_matrix[names(selectedGeneList[[1]]), ]
 # SKmeans clustering
@@ -405,18 +403,11 @@ for(i in 1:length(selectedGeneList)){
   set.seed(12345)
   submat<-count_matrix[names(selectedGeneList[[i]]), ]
   PG_groups_sk[[i]]<-skmeans(x = t(log2(submat + 1)) , k = k_cls, control = list(verbose = FALSE))$cluster
-  d<-as.dist(skmeans_xdist(t(log2(submat + 1))))
-  d <- 1 - as.matrix(d)
-  g <- graph_from_adjacency_matrix(d, mode=c("undirected"), weighted=TRUE, diag=FALSE)
-  louvain_cl <- cluster_louvain(g)
-  PG_groups_lv[[i]] <- louvain_cl$membership
-  names(PG_groups_lv[[i]]) <- louvain_cl$names
   print(i)
 }
 
 for (i in 1:length(selectedGeneList)){
   PG_results_sk[[i]] <- clustSensitivity(PG_groups_sk[[i]], true_labels_vector, as.character(1:k_cls))
-  PG_results_lv[[i]] <- clustSensitivity(PG_groups_sk[[i]], true_labels_vector, as.character(1:k_cls))
 }
 labels_vs_clust <- data.frame(
     PG_labels     = PG_groups_sk[[1]]
@@ -426,7 +417,7 @@ celltype_vec <- setNames(full_true_labels$label, full_true_labels$cell_id)
 labels_vs_clust$celltype <- celltype_vec[rownames(labels_vs_clust)]
 write.csv(labels_vs_clust, paste0(here(), "/Data_Hold/", name, "_truth_vs_clustering.csv"))
 smaller_count_matrix<-count_matrix[names(principal_genes_results$top_genes[1:100]),]
-write.csv(smaller_count_matrix, paste0(here(), "/Data_Hold/", name, "_smaller_count_matrix.csv"))
+write.csv(smaller_count_matrix, paste0(here(), "/Data_Hold/", name, "_top100PG_count_matrix.csv"))
 ```
 
 ##SK_MEANS CLUSTERING USING HVGS
@@ -452,19 +443,11 @@ commongenes<-intersect(names(principal_genes_results$top_genes), names(scored_hv
 # SKmeans clustering
 HVG_groups_sk <- list()
 HVG_results_sk <-list()
-HVG_groups_lv <- list()
-HVG_results_lv <-list()
 
 for(i in seq_along(num_genes)){
   set.seed(12345)
   submat<-count_matrix[HVGs[1:min(length(HVGs),as.numeric(num_genes[i]))], ]
   HVG_groups_sk[[i]]<-skmeans(x = t(log2(submat + 1)) , k = k_cls, control = list(verbose = FALSE))$cluster
-  d<-as.dist(skmeans_xdist(t(log2(submat + 1))))
-  d <- 1 - as.matrix(d)
-  g <- graph_from_adjacency_matrix(d, mode=c("undirected"), weighted=TRUE, diag=FALSE)
-  louvain_cl <- cluster_louvain(g)
-  HVG_groups_lv[[i]] <- louvain_cl$membership
-  names(HVG_groups_lv[[i]]) <- louvain_cl$names
   print(num_genes[i])
 }
 
@@ -472,7 +455,6 @@ true_labels_vector <- setNames(full_true_labels$numeric_labels, full_true_labels
 
 for (i in seq_along(num_genes)){
   HVG_results_sk[[i]] <- clustSensitivity(HVG_groups_sk[[i]], true_labels_vector, as.character(1:k_cls))
-  HVG_results_lv[[i]] <- clustSensitivity(HVG_groups_lv[[i]], true_labels_vector, as.character(1:k_cls))
 }
 
 ```
@@ -488,20 +470,12 @@ for(i in seq_along(selectedGeneList)){
 # SKmeans clustering
 Union_groups_sk <- list()
 Union_results_sk <-list()
-Union_groups_lv <- list()
-Union_results_lv <-list()
 
 # SKmeans clustering
 for(i in 1:length(selectedGeneList)){
   set.seed(12345)
   submat<-count_matrix[pg_hvg_union[[i]],]
   Union_groups_sk[[i]]<-skmeans(x = t(log2(submat + 1)) , k = k_cls, control = list(verbose = FALSE))$cluster
-  d<-as.dist(skmeans_xdist(t(log2(submat + 1))))
-  d <- 1 - as.matrix(d)
-  g <- graph_from_adjacency_matrix(d, mode=c("undirected"), weighted=TRUE, diag=FALSE)
-  louvain_cl <- cluster_louvain(g)
-  Union_groups_lv[[i]] <- louvain_cl$membership
-  names(Union_groups_lv[[i]]) <- louvain_cl$names
   print(i)
 }
 #Union_groups_sk[[20]]<-skmeans(x=t(log2(count_matrix + 1)), k=k_cls, control = list(verbose = FALSE))$cluster
@@ -510,7 +484,6 @@ true_labels_vector <- setNames(full_true_labels$numeric_labels, full_true_labels
 
 for (i in 1:length(selectedGeneList)){
   Union_results_sk[[i]] <- clustSensitivity(Union_groups_sk[[i]], true_labels_vector, as.character(1:k_cls))
-  Union_results_lv[[i]] <- clustSensitivity(Union_groups_lv[[i]], true_labels_vector, as.character(1:k_cls))
 }
 
 ```
@@ -549,7 +522,7 @@ points_sk <- data.frame(
   num_genes = as.integer(num_genes),
   union_num_genes = as.integer(sapply(pg_hvg_union, length))
 )
-write.csv(points_sk, file=paste0(here(), "/results/TabulaMuris_Liver_Results/Short_TabulaMuris_Liver_SKM_accuracy_results.csv"))
+write.csv(points_sk, file=paste0(here(), "/Data_Hold/TabulaMuris_Liver_SKM_accuracy_results.csv"))
 
 # Long (tidy) format for ggplot
 plot_df1 <- points_sk %>%
@@ -610,7 +583,7 @@ ggplot(plot_df1, aes(x = thresholds, y = sensitivity, color = metric)) +
   ) +
   theme_minimal()
 
-ggsave(filename = paste0(here(), "/results/TabulaMuris_Liver_Results/Short_TabulaMuris_Liver_PG_HVG_UNION_Sensitivity.jpg"),, 
+ggsave(filename = paste0(here(), "/results/TabulaMuris_Liver_Results/TabulaMuris_Liver_PG_HVG_UNION_Sensitivity.jpg"),, 
         dpi = 300)
 
 #adjustedRandIndex
@@ -632,7 +605,7 @@ points_sk <- data.frame(
   num_genes = as.integer(num_genes),
   union_num_genes = as.integer(sapply(pg_hvg_union, length))
 )
-write.csv(points_sk, file=paste0(here(), "/results/TabulaMuris_Liver_Results/Short_TabulaMuris_Liver_SKM_rand_index_results.csv"))
+write.csv(points_sk, file=paste0(here(), "/Data_Hold/TabulaMuris_Liver_SKM_rand_index_results.csv"))
 
 # Long (tidy) format for ggplot
 plot_df <- points_sk %>%
@@ -695,7 +668,7 @@ ggplot(plot_df, aes(x = thresholds, y = adjustedRandIndex, color = metric)) +
   ) +
   theme_minimal()
 
-ggsave(filename = paste0(here(), "/results/TabulaMuris_Liver_Results/Short_TabulaMuris_Liver_PG_HVG_UNION_RandIndex.jpg"),, 
+ggsave(filename = paste0(here(), "/results/TabulaMuris_Liver_Results/TabulaMuris_Liver_PG_HVG_UNION_RandIndex.jpg"),, 
        dpi = 300)
 
 ```
@@ -766,7 +739,7 @@ ggplot(plot_df1_filtered, aes(x = thresholds, y = sensitivity, color = metric)) 
   ) +
   theme_minimal()
 
-ggsave(filename = paste0(here(), "/results/TabulaMuris_Liver_Results/Short_TabulaMuris_Liver_PG_HVG_UNION_No_Outliers_Sensitivity.jpg"),, 
+ggsave(filename = paste0(here(), "/results/TabulaMuris_Liver_Results/TabulaMuris_Liver_PG_HVG_UNION_No_Outliers_Sensitivity.jpg"),, 
        dpi = 300)
 
 add_loess_ci <- function(df, span = 1, degree = 1, surface = "direct") {
@@ -834,329 +807,7 @@ ggplot(plot_df_filtered, aes(x = thresholds, y = adjustedRandIndex, color = metr
   ) +
   theme_minimal()
 
-ggsave(filename = paste0(here(), "/results/TabulaMuris_Liver_Results/Short_TabulaMuris_Liver_PG_HVG_UNION_No_Outliers_RandIndex.jpg"),, 
-        dpi = 300)
-
-```
-
-
-##PLOT CLUSTERING RESULTS COMPARING HVGS AND CUMULATIVE SCORE:LOUVAIN
-```{r}
-library(dplyr)
-library(tidyr)
-library(ggplot2)
-library(mclust)
-
-RowNames <- list()
-pg_points_lv <- list()
-hvg_points_lv <- list()
-union_points_lv<-list()
-
-for(i in 1: length(PG_results_lv)){
-  pg_points_lv[[i]] <- PG_results_lv[[i]][1,2]
-  RowNames[[i]] <- i
-}
-
-for(i in 1: length(HVG_results_lv)){
-  hvg_points_lv[[i]] <- HVG_results_lv[[i]][1,2]
-}
-
-for (i in 1:length(Union_results_lv)){
-  union_points_lv[[i]]<-Union_results_lv[[i]][1,2]
-}
-
-points_lv <- data.frame(
-  row.names = unlist(RowNames),
-  PG_sensitivity=as.numeric(unlist(pg_points_lv)),
-  HVG_sensitivity = as.numeric(unlist(hvg_points_lv)),
-  PG_HVG_Union = as.numeric(unlist(union_points_lv)),
-  thresholds =as.numeric(thresholds),
-  num_genes = as.integer(num_genes),
-  union_num_genes = as.integer(sapply(pg_hvg_union, length))
-)
-write.csv(points_lv, file=paste0(here(), "/results/TabulaMuris_Liver_Results/Short_Louvain__TabulaMuris_Liver_lvM_accuracy_results.csv"))
-
-# Long (tidy) format for ggplot
-plot_df1 <- points_lv %>%
-  pivot_longer(
-    cols = c(PG_sensitivity, HVG_sensitivity, PG_HVG_Union),
-    names_to = "metric",
-    values_to = "sensitivity"
-  )
-
-#control legend order
-plot_df1$metric <- factor(plot_df1$metric,
-                          levels = c("PG_sensitivity","HVG_sensitivity","PG_HVG_Union"))
-
-#add labels for union numbers
-plot_df1$label_val <- NA
-plot_df1$label_val[plot_df1$metric == "PG_sensitivity"] <- plot_df1$num_genes[plot_df1$metric == "PG_sensitivity"]
-plot_df1$label_val[plot_df1$metric == "PG_HVG_Union"] <- plot_df1$union_num_genes[plot_df1$metric == "PG_HVG_Union"]
-
-ggplot(plot_df1, aes(x = thresholds, y = sensitivity, color = metric)) +
-  geom_point(size = 2) +
-  geom_smooth(
-    method = "loess",
-    method.args = list(span = 1, degree = 1, surface = "direct"),
-    se = FALSE
-  ) +
-  scale_y_continuous(limits = c(0, 1)) +
-  labs(x = "Cumulative Score",
-       y = "Clustering Sensitivity",
-       color = "Gene Selection Method",
-       title = "Louvain Clustering Sensitivity for TabulaMuris_Liver Dataset: Loess Regression") +
-  scale_color_manual(
-    breaks = c("PG_sensitivity","HVG_sensitivity","PG_HVG_Union"),
-    values = c(
-      "PG_sensitivity"  = "#1BB7D8",
-      "HVG_sensitivity" = "#E55B1E",
-      "PG_HVG_Union" = "#2C9F45"
-    ),
-    labels = c(
-      "PG_sensitivity"  = "Principal Genes",
-      "HVG_sensitivity" = "Seurat's HVG",
-      "PG_HVG_Union" = "HVG_PG_Union"
-    )
-  ) +
-  
-  # PG labels
-  geom_text(
-    data = subset(plot_df1, metric == "PG_sensitivity"),
-    aes(label = label_val),
-    color = "#1BB7D8", vjust = +2, size = 3, check_overlap = TRUE
-  ) +
-  
-  # Union labels
-  geom_text(
-    data = subset(plot_df1, metric == "PG_HVG_Union"),
-    aes(label = label_val),
-    color = "darkgreen", vjust = -2, size = 3, check_overlap = TRUE
-  ) +
-  theme_minimal()
-
-ggsave(filename = paste0(here(), "/results/TabulaMuris_Liver_Results/Short_Louvain_TabulaMuris_Liver_PG_HVG_UNION_Sensitivity.jpg"),, 
-        dpi = 300)
-
-#adjustedRandIndex
-pg_rand<-list()
-hvg_rand<-list()
-union_rand<-list()
-for (i in 1:length(PG_groups_lv)){
-  pg_rand[[i]]<-adjustedRandIndex(x=PG_groups_lv[[i]], y=true_labels_vector)
-  hvg_rand[[i]]<-adjustedRandIndex(x=HVG_groups_lv[[i]], y=true_labels_vector)
-  union_rand[[i]]<-adjustedRandIndex(x=Union_groups_lv[[i]], y=true_labels_vector)
-}
-
-points_lv <- data.frame(
-  row.names = unlist(RowNames),
-  PG_randIndex=as.numeric(unlist(pg_rand)),
-  HVG_randIndex = as.numeric(unlist(hvg_rand)),
-  PG_HVG_UnionRand = as.numeric(unlist(union_rand)),
-  thresholds =as.numeric(thresholds),
-  num_genes = as.integer(num_genes),
-  union_num_genes = as.integer(sapply(pg_hvg_union, length))
-)
-write.csv(points_lv, file=paste0(here(), "/results/TabulaMuris_Liver_Results/Short_Louvain_TabulaMuris_Liver_lvM_rand_index_results.csv"))
-
-# Long (tidy) format for ggplot
-plot_df <- points_lv %>%
-  pivot_longer(
-    cols = c(PG_randIndex, HVG_randIndex, PG_HVG_UnionRand),
-    names_to = "metric",
-    values_to = "adjustedRandIndex"
-  )
-
-#control legend order
-plot_df$metric <- factor(plot_df$metric,
-                         levels = c("PG_randIndex","HVG_randIndex","PG_HVG_UnionRand"))
-
-#add labels for union numbers
-plot_df$label_val <- NA
-plot_df$label_val[plot_df$metric == "PG_randIndex"] <- plot_df$num_genes[plot_df$metric == "PG_randIndex"]
-plot_df$label_val[plot_df$metric == "PG_HVG_UnionRand"] <- plot_df$union_num_genes[plot_df$metric == "PG_HVG_UnionRand"]
-
-# Plot both on the same axes
-
-ggplot(plot_df, aes(x = thresholds, y = adjustedRandIndex, color = metric)) +
-  geom_point(size = 2) +
-  geom_smooth(
-    method = "loess",
-    method.args = list(span = 1, degree = 1, surface = "direct"),
-    se = FALSE
-  ) +
-  scale_y_continuous(limits = c(0, 1)) +
-  labs(x = "Cumulative Score",
-       y = "Rand Index",
-       color = "Gene Selection Method",
-       title = "Louvain Rand Index for TabulaMuris_Liver Dataset: Loess Regression") +
-  scale_color_manual(
-    breaks = c("PG_randIndex","HVG_randIndex","PG_HVG_UnionRand"),
-    values = c(
-      "PG_randIndex"  = "#1BB7D8",
-      "HVG_randIndex" = "#E55B1E",
-      "PG_HVG_UnionRand" = "#2C9F45"
-    ),
-    labels = c(
-      "PG_randIndex"  = "Principal Genes",
-      "HVG_randIndex" = "Seurat's HVG",
-      "PG_HVG_UnionRand" = "HVG_PG_Union"
-    )
-  ) +
-  # PG labels
-  geom_text(
-    data = subset(plot_df, metric == "PG_randIndex"),
-    aes(label = label_val),
-    color = "#1BB7D8", vjust = +2, size = 3, check_overlap = TRUE
-  ) +
-  
-  # Union labels
-  geom_text(
-    data = subset(plot_df, metric == "PG_HVG_UnionRand"),
-    aes(label = label_val),
-    color = "darkgreen", vjust = -2, size = 3, check_overlap = TRUE
-  ) +
-  theme_minimal()
-
-ggsave(filename = paste0(here(), "/results/TabulaMuris_Liver_Results/Short_Louvain_TabulaMuris_Liver_PG_HVG_UNION_RandIndex.jpg"),, 
-        dpi = 300)
-
-```
-##NO OUTLIERS
-```{r}
-add_loess_ci <- function(df, span = 1, degree = 1, surface = "direct") {
-  mod <- loess(sensitivity ~ thresholds, data = df,
-               span = span, degree = degree, surface = surface)
-  pr  <- predict(mod, newdata = data.frame(thresholds = df$thresholds), se = TRUE)
-  
-  df$fit   <- pr$fit
-  df$se    <- pr$se.fit
-  df$lower <- df$fit - 1.96 * df$se
-  df$upper <- df$fit + 1.96 * df$se
-  df$outlier <- df$sensitivity < df$lower | df$sensitivity > df$upper
-  df
-}
-
-# Apply per metric
-plot_df1 <- plot_df1 %>%
-  group_by(metric) %>%
-  group_modify(~ add_loess_ci(.x, span = 1, degree = 1, surface = "direct")) %>%
-  ungroup()
-
-# Filter out outliers
-plot_df1_filtered <- plot_df1 %>% filter(!outlier)
-
-# Now plot the filtered points only
-ggplot(plot_df1_filtered, aes(x = thresholds, y = sensitivity, color = metric)) +
-  geom_point(size = 2) +
-  
-  # PG labels
-  geom_text(
-    data = subset(plot_df1_filtered, metric == "PG_sensitivity"),
-    aes(label = label_val),
-    color = "#1BB7D8", vjust = +2, size = 3, check_overlap = TRUE
-  ) +
-  
-  # Union labels
-  geom_text(
-    data = subset(plot_df1_filtered, metric == "PG_HVG_Union"),
-    aes(label = label_val),
-    color = "darkgreen", vjust = -2, size = 3, check_overlap = TRUE
-  ) +
-  
-  geom_smooth(
-    method = "loess",
-    method.args = list(span = 1, degree = 1, surface = "direct"),
-    se = FALSE
-  ) +
-  scale_y_continuous(limits = c(0, 1)) +
-  labs(x = "Cumulative Score",
-       y = "Clustering Sensitivity",
-       color = "Gene Selection Method",
-       title = "Louvain Clustering Sensitivity for TabulaMuris_Liver Dataset: Loess Regression Outliers Removed") +
-  scale_color_manual(
-    breaks = c("PG_sensitivity","HVG_sensitivity","PG_HVG_Union"),
-    values = c(
-      "PG_sensitivity"  = "#1BB7D8",
-      "HVG_sensitivity" = "#E55B1E",
-      "PG_HVG_Union"    = "#2C9F45"
-    ),
-    labels = c(
-      "PG_sensitivity"  = "Principal Genes",
-      "HVG_sensitivity" = "Seurat's HVG",
-      "PG_HVG_Union"    = "HVG_PG_Union"
-    )
-  ) +
-  theme_minimal()
-
-ggsave(filename = paste0(here(), "/results/TabulaMuris_Liver_Results/Short_Louvain_TabulaMuris_Liver_PG_HVG_UNION_No_Outliers_Sensitivity.jpg"),, 
-        dpi = 300)
-
-add_loess_ci <- function(df, span = 1, degree = 1, surface = "direct") {
-  mod <- loess(adjustedRandIndex ~ thresholds, data = df,
-               span = span, degree = degree, surface = surface)
-  pr  <- predict(mod, newdata = data.frame(thresholds = df$thresholds), se = TRUE)
-  
-  df$fit   <- pr$fit
-  df$se    <- pr$se.fit
-  df$lower <- df$fit - 1.96 * df$se
-  df$upper <- df$fit + 1.96 * df$se
-  df$outlier <- df$adjustedRandIndex < df$lower | df$adjustedRandIndex > df$upper
-  df
-}
-
-# Apply per metric
-plot_df <- plot_df %>%
-  group_by(metric) %>%
-  group_modify(~ add_loess_ci(.x, span = 1, degree = 1, surface = "direct")) %>%
-  ungroup()
-
-# Filter out outliers
-plot_df_filtered <- plot_df %>% filter(!outlier)
-
-# Now plot the filtered points only
-ggplot(plot_df_filtered, aes(x = thresholds, y = adjustedRandIndex, color = metric)) +
-  geom_point(size = 2) +
-  
-  # PG labels
-  geom_text(
-    data = subset(plot_df_filtered, metric == "PG_randIndex"),
-    aes(label = label_val),
-    color = "#1BB7D8", vjust = +2, size = 3, check_overlap = TRUE
-  ) +
-  
-  # Union labels
-  geom_text(
-    data = subset(plot_df_filtered, metric == "PG_HVG_UnionRand"),
-    aes(label = label_val),
-    color = "darkgreen", vjust = -2, size = 3, check_overlap = TRUE
-  ) +
-  
-  geom_smooth(
-    method = "loess",
-    method.args = list(span = 1, degree = 1, surface = "direct"),
-    se = FALSE
-  ) +
-  scale_y_continuous(limits = c(0, 1)) +
-  labs(x = "Cumulative Score",
-       y = "Rand Index",
-       color = "Gene Selection Method",
-       title = "Louvain Clustering Rand Index for TabulaMuris_Liver Dataset: Loess Regression Outliers Removed") +
-  scale_color_manual(
-    breaks = c("PG_randIndex","HVG_randIndex","PG_HVG_UnionRand"),
-    values = c(
-      "PG_randIndex"  = "#1BB7D8",
-      "HVG_randIndex" = "#E55B1E",
-      "PG_HVG_UnionRand"    = "#2C9F45"
-    ),
-    labels = c(
-      "PG_randIndex"  = "Principal Genes",
-      "HVG_randIndex" = "Seurat's HVG",
-      "PG_HVG_UnionRand"    = "HVG_PG_Union"
-    )
-  ) +
-  theme_minimal()
-
-ggsave(filename = paste0(here(), "/results/TabulaMuris_Liver_Results/Short_Louvain_TabulaMuris_Liver_PG_HVG_UNION_No_Outliers_RandIndex.jpg"),, 
+ggsave(filename = paste0(here(), "/results/TabulaMuris_Liver_Results/TabulaMuris_Liver_PG_HVG_UNION_No_Outliers_RandIndex.jpg"),, 
         dpi = 300)
 
 ```
@@ -1210,8 +861,8 @@ raw_scores_df <- data.frame(
   Mean = round(mean_values[names(principal_genes_results$top_genes[1:100])], 4)
 )
 
-write.csv(intersect_df, file = paste0(here(), "/results/TabulaMuris_Liver_Results/TabulaMuris_Liver_PPS_HVG_Variance_Mean_Intersect.csv"))
-write.csv(raw_scores_df, file = paste0(here(), "/results/TabulaMuris_Liver_Results/TabulaMuris_Liver_PPS_HVG_Variance_Mean_Top100.csv"))
+write.csv(intersect_df, file = paste0(here(), "/Data_Hold/TabulaMuris_Liver_PPS_HVG_Variance_Mean_Intersect.csv"))
+write.csv(raw_scores_df, file = paste0(here(), "/Data_Hold/TabulaMuris_Liver_PPS_HVG_Variance_Mean_Top100.csv"))
 ```
 
 ##FINAL PLOTS FROM HVG-only genes and PPS-only genes

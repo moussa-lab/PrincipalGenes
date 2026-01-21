@@ -415,7 +415,7 @@ celltype_vec <- setNames(full_true_labels$labels, full_true_labels$cells)
 labels_vs_clust$celltype <- celltype_vec[rownames(labels_vs_clust)]
 write.csv(labels_vs_clust, paste0(here(), "/Data_Hold/", name, "_truth_vs_clustering.csv"))
 smaller_count_matrix<-count_matrix[names(principal_genes_results$top_genes[1:100]),]
-write.csv(smaller_count_matrix, paste0(here(), "/Data_Hold/", name, "_smaller_count_matrix.csv"))
+write.csv(smaller_count_matrix, paste0(here(), "/Data_Hold/", name, "_top100PG_count_matrix.csv"))
 
 ```
 
@@ -579,7 +579,7 @@ ggplot(plot_df1, aes(x = thresholds, y = sensitivity, color = metric)) +
   ) +
   theme_minimal()
 
-ggsave(filename = paste0(here(), "/results/Azimuth_Results/Short_Azimuth_PG_HVG_UNION_Sensitivity.jpg"),, 
+ggsave(filename = paste0(here(), "/results/Azimuth_Results/Azimuth_PG_HVG_UNION_Sensitivity.jpg"),, 
      dpi = 300)
 
 #adjustedRandIndex
@@ -663,10 +663,11 @@ ggplot(plot_df, aes(x = thresholds, y = adjustedRandIndex, color = metric)) +
   ) +
   theme_minimal()
 
-ggsave(filename = paste0(here(), "/results/Azimuth_Results/Short_Azimuth_PG_HVG_UNION_RandIndex.jpg"),, 
+ggsave(filename = paste0(here(), "/results/Azimuth_Results/Azimuth_PG_HVG_UNION_RandIndex.jpg"),, 
      dpi = 300)
 
 ```
+
 ##NO OUTLIERS
 ```{r}
 add_loess_ci <- function(df, span = 1, degree = 1, surface = "direct") {
@@ -855,8 +856,8 @@ raw_scores_df <- data.frame(
   Mean = round(mean_values[names(principal_genes_results$top_genes[1:100])], 4)
 )
 
-write.csv(intersect_df, file = paste0(here(), "/results/Azimuth_Results/Azimuth_PPS_HVG_Variance_Mean_Intersect.csv"))
-write.csv(raw_scores_df, file = paste0(here(), "/results/Azimuth_Results/Azimuth_PPS_HVG_Variance_Mean_Top100.csv"))
+write.csv(intersect_df, file = paste0(here(), "/Data_Hold/Azimuth_PPS_HVG_Variance_Mean_Intersect.csv"))
+write.csv(raw_scores_df, file = paste0(here(), "/Data_Hold/Azimuth_PPS_HVG_Variance_Mean_Top100.csv"))
 ```
 
 ##FINAL PLOTS FROM HVG-only genes and PPS-only genes
