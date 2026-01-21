@@ -273,7 +273,7 @@ library(here)
 
 ```{r}
 
-input_file<-"/Tabula_Muris_Lung-counts.csv"
+input_file<-"/Tabula_Muris_Lung_smaller_count_matrix.csv"
 truth_file<-"/Tabula_Muris_Lung_Labels.csv"
 name<-"Tabula_Muris_Lung"
 
