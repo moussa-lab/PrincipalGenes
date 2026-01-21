@@ -2,7 +2,7 @@
 Repository of Data and Code for the development and evaluation of the Principal Genes Method
 
 # Instructions
-
+- Input count matrices are available [https://drive.google.com/drive/folders/1ltFHX5rjB8K2SGMiuhtHgTSbZug4zVzb?usp=sharing](here)
 - Uncompress input count matrices in `inputdata.tar.gz` using the commands below. Ensure the input data is in the parent directory.
 
 ```
