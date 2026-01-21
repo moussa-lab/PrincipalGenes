@@ -338,7 +338,7 @@ ggplot(PC1_and_PC2, aes(x=PC1, y=PC2, color=labels))+
   labs(x = "PC1", y = "PC2", title="TabulaMuris_Lung PCA Plot")+
   theme(plot.title=element_text(hjust=0.5))
 
-ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/TabulaMuris_Lung_Results/TabulaMuris_Lung_PCA_Plot.jpg"),, 
+ggsave(filename = paste0(here(), "/results/TabulaMuris_Lung_Results/TabulaMuris_Lung_PCA_Plot.jpg"),, 
         dpi = 300)
 ```
 
@@ -555,7 +555,7 @@ points_sk <- data.frame(
   num_genes = as.integer(num_genes),
   union_num_genes = as.integer(sapply(pg_hvg_union, length))
 )
-write.csv(points_sk, file=paste0(here(), "/Post_Log2_Norm/Filtered/TabulaMuris_Lung_Results/Short_TabulaMuris_Lung_SKM_accuracy_results.csv"))
+write.csv(points_sk, file=paste0(here(), "/results/TabulaMuris_Lung_Results/Short_TabulaMuris_Lung_SKM_accuracy_results.csv"))
 
 # Long (tidy) format for ggplot
 plot_df1 <- points_sk %>%
@@ -616,7 +616,7 @@ ggplot(plot_df1, aes(x = thresholds, y = sensitivity, color = metric)) +
   ) +
   theme_minimal()
 
-ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/TabulaMuris_Lung_Results/Short_TabulaMuris_Lung_PG_HVG_UNION_Sensitivity.jpg"),, 
+ggsave(filename = paste0(here(), "/results/TabulaMuris_Lung_Results/Short_TabulaMuris_Lung_PG_HVG_UNION_Sensitivity.jpg"),, 
         dpi = 300)
 
 #adjustedRandIndex
@@ -638,7 +638,7 @@ points_sk <- data.frame(
   num_genes = as.integer(num_genes),
   union_num_genes = as.integer(sapply(pg_hvg_union, length))
 )
-write.csv(points_sk, file=paste0(here(), "/Post_Log2_Norm/Filtered/TabulaMuris_Lung_Results/Short_TabulaMuris_Lung_SKM_rand_index_results.csv"))
+write.csv(points_sk, file=paste0(here(), "/results/TabulaMuris_Lung_Results/Short_TabulaMuris_Lung_SKM_rand_index_results.csv"))
 
 # Long (tidy) format for ggplot
 plot_df <- points_sk %>%
@@ -701,7 +701,7 @@ ggplot(plot_df, aes(x = thresholds, y = adjustedRandIndex, color = metric)) +
   ) +
   theme_minimal()
 
-ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/TabulaMuris_Lung_Results/Short_TabulaMuris_Lung_PG_HVG_UNION_RandIndex.jpg"),, 
+ggsave(filename = paste0(here(), "/results/TabulaMuris_Lung_Results/Short_TabulaMuris_Lung_PG_HVG_UNION_RandIndex.jpg"),, 
         dpi = 300)
 
 ```
@@ -772,7 +772,7 @@ ggplot(plot_df1_filtered, aes(x = thresholds, y = sensitivity, color = metric)) 
   ) +
   theme_minimal()
 
-ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/TabulaMuris_Lung_Results/Short_TabulaMuris_Lung_PG_HVG_UNION_No_Outliers_Sensitivity.jpg"),, 
+ggsave(filename = paste0(here(), "/results/TabulaMuris_Lung_Results/Short_TabulaMuris_Lung_PG_HVG_UNION_No_Outliers_Sensitivity.jpg"),, 
         dpi = 300)
 
 add_loess_ci <- function(df, span = 1, degree = 1, surface = "direct") {
@@ -840,7 +840,7 @@ ggplot(plot_df_filtered, aes(x = thresholds, y = adjustedRandIndex, color = metr
   ) +
   theme_minimal()
 
-ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/TabulaMuris_Lung_Results/Short_TabulaMuris_Lung_PG_HVG_UNION_No_Outliers_RandIndex.jpg"),, 
+ggsave(filename = paste0(here(), "/results/TabulaMuris_Lung_Results/Short_TabulaMuris_Lung_PG_HVG_UNION_No_Outliers_RandIndex.jpg"),, 
         dpi = 300)
 
 ```
@@ -880,7 +880,7 @@ points_lv <- data.frame(
   num_genes = as.integer(num_genes),
   union_num_genes = as.integer(sapply(pg_hvg_union, length))
 )
-write.csv(points_lv, file=paste0(here(), "/Post_Log2_Norm/Filtered/TabulaMuris_Lung_Results/Short_Louvain__TabulaMuris_Lung_lvM_accuracy_results.csv"))
+write.csv(points_lv, file=paste0(here(), "/results/TabulaMuris_Lung_Results/Short_Louvain__TabulaMuris_Lung_lvM_accuracy_results.csv"))
 
 # Long (tidy) format for ggplot
 plot_df1 <- points_lv %>%
@@ -941,7 +941,7 @@ ggplot(plot_df1, aes(x = thresholds, y = sensitivity, color = metric)) +
   ) +
   theme_minimal()
 
-ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/TabulaMuris_Lung_Results/Short_Louvain_TabulaMuris_Lung_PG_HVG_UNION_Sensitivity.jpg"),,
+ggsave(filename = paste0(here(), "/results/TabulaMuris_Lung_Results/Short_Louvain_TabulaMuris_Lung_PG_HVG_UNION_Sensitivity.jpg"),,
        dpi = 300)
 
 #adjustedRandIndex
@@ -963,7 +963,7 @@ points_lv <- data.frame(
   num_genes = as.integer(num_genes),
   union_num_genes = as.integer(sapply(pg_hvg_union, length))
 )
-write.csv(points_lv, file=paste0(here(), "/Post_Log2_Norm/Filtered/TabulaMuris_Lung_Results/Short_Louvain_TabulaMuris_Lung_lvM_rand_index_results.csv"))
+write.csv(points_lv, file=paste0(here(), "/results/TabulaMuris_Lung_Results/Short_Louvain_TabulaMuris_Lung_lvM_rand_index_results.csv"))
 
 # Long (tidy) format for ggplot
 plot_df <- points_lv %>%
@@ -1026,7 +1026,7 @@ ggplot(plot_df, aes(x = thresholds, y = adjustedRandIndex, color = metric)) +
   ) +
   theme_minimal()
 
-ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/TabulaMuris_Lung_Results/Short_Louvain_TabulaMuris_Lung_PG_HVG_UNION_RandIndex.jpg"),, 
+ggsave(filename = paste0(here(), "/results/TabulaMuris_Lung_Results/Short_Louvain_TabulaMuris_Lung_PG_HVG_UNION_RandIndex.jpg"),, 
         dpi = 300)
 
 ```
@@ -1097,7 +1097,7 @@ ggplot(plot_df1_filtered, aes(x = thresholds, y = sensitivity, color = metric)) 
   ) +
   theme_minimal()
 
-ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/TabulaMuris_Lung_Results/Short_Louvain_TabulaMuris_Lung_PG_HVG_UNION_No_Outliers_Sensitivity.jpg"),, 
+ggsave(filename = paste0(here(), "/results/TabulaMuris_Lung_Results/Short_Louvain_TabulaMuris_Lung_PG_HVG_UNION_No_Outliers_Sensitivity.jpg"),, 
         dpi = 300)
 
 add_loess_ci <- function(df, span = 1, degree = 1, surface = "direct") {
@@ -1165,7 +1165,7 @@ ggplot(plot_df_filtered, aes(x = thresholds, y = adjustedRandIndex, color = metr
   ) +
   theme_minimal()
 
-ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/TabulaMuris_Lung_Results/Short_Louvain_TabulaMuris_Lung_PG_HVG_UNION_No_Outliers_RandIndex.jpg"),, 
+ggsave(filename = paste0(here(), "/results/TabulaMuris_Lung_Results/Short_Louvain_TabulaMuris_Lung_PG_HVG_UNION_No_Outliers_RandIndex.jpg"),, 
         dpi = 300)
 
 ```
@@ -1219,8 +1219,8 @@ raw_scores_df <- data.frame(
   Mean = round(mean_values[names(principal_genes_results$top_genes[1:100])], 4)
 )
 
-write.csv(intersect_df, file = paste0(here(), "/Post_Log2_Norm/Filtered/TabulaMuris_Lung_Results/TabulaMuris_Lung_PPS_HVG_Variance_Mean_Intersect.csv"))
-write.csv(raw_scores_df, file = paste0(here(), "/Post_Log2_Norm/Filtered/TabulaMuris_Lung_Results/TabulaMuris_Lung_PPS_HVG_Variance_Mean_Top100.csv"))
+write.csv(intersect_df, file = paste0(here(), "/results/TabulaMuris_Lung_Results/TabulaMuris_Lung_PPS_HVG_Variance_Mean_Intersect.csv"))
+write.csv(raw_scores_df, file = paste0(here(), "/results/TabulaMuris_Lung_Results/TabulaMuris_Lung_PPS_HVG_Variance_Mean_Top100.csv"))
 ```
 
 ##FINAL PLOTS FROM HVG-only genes and PPS-only genes
@@ -1295,7 +1295,7 @@ ggplot() +
     )
   ) +
   theme(plot.title = element_text(hjust = 0.5))
-ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/TabulaMuris_Lung_Results/TabulaMuris_Lung_PS_Dispersion_Comparison.jpg"),, 
+ggsave(filename = paste0(here(), "/results/TabulaMuris_Lung_Results/TabulaMuris_Lung_PS_Dispersion_Comparison.jpg"),, 
      dpi = 300)
 
 # Build comparison_df with all categories
@@ -1349,25 +1349,25 @@ ggplot() +
   theme(plot.title = element_text(hjust = 0.5)) +
   geom_abline(slope = 1, intercept = 0, linetype = 2, color = "red")
 
-ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/TabulaMuris_Lung_Results/TabulaMuris_Lung_PG_HVG_INTERSECT_Log10_mean_variance.jpg"),, 
+ggsave(filename = paste0(here(), "/results/TabulaMuris_Lung_Results/TabulaMuris_Lung_PG_HVG_INTERSECT_Log10_mean_variance.jpg"),, 
         dpi = 300)
 
 ##VIOLIN PLOT
 VlnPlot(norm_seuratObject, features=pg_only_gene_names[1:9]) & 
   theme(axis.title.x = element_blank(),
         axis.text.x = element_blank())
-ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/TabulaMuris_Lung_Results/TabulaMuris_Lung_PG_Only_Violin_Plot.jpg"),, 
+ggsave(filename = paste0(here(), "/results/TabulaMuris_Lung_Results/TabulaMuris_Lung_PG_Only_Violin_Plot.jpg"),, 
         dpi = 300)
 
 VlnPlot(norm_seuratObject, features=hvg_only_gene_names[1:9]) & 
   theme(axis.title.x = element_blank(),
         axis.text.x = element_blank())
-ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/TabulaMuris_Lung_Results/TabulaMuris_Lung_HVG_Only_Violin_Plot.jpg"),, 
+ggsave(filename = paste0(here(), "/results/TabulaMuris_Lung_Results/TabulaMuris_Lung_HVG_Only_Violin_Plot.jpg"),, 
         dpi = 300)
 
 VlnPlot(norm_seuratObject, features=common_gene_names[1:9]) & 
   theme(axis.title.x = element_blank(),
         axis.text.x = element_blank())
-ggsave(filename = paste0(here(), "/Post_Log2_Norm/Filtered/TabulaMuris_Lung_Results/TabulaMuris_Lung_PG_HVG_INTERSECT_Violin_Plot.jpg"),, 
+ggsave(filename = paste0(here(), "/results/TabulaMuris_Lung_Results/TabulaMuris_Lung_PG_HVG_INTERSECT_Violin_Plot.jpg"),, 
         dpi = 300)
 ```
