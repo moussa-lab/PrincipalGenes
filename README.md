@@ -1,2 +1,15 @@
 # PrincipalGenes
 Repository of Data and Code for the development and evaluation of the Principal Genes Method
+
+# Instructions
+
+- Uncompress input count matrices in `inputdata.tar.gz` using the commands below. Ensure the input data is in the parent directory.
+
+```
+tar -zxvf inputdata.tar.gz .
+mv inputdata/* .
+rm -r inputdata
+```
+- Output graphs and figures will be stored in results ordered according to the dataset tested.
+- Output `csv` files will be stored in `Data_Hold`
+
