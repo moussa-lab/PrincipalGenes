@@ -1,0 +1,569 @@
+---
+title: "Human_Primary_Motor_Cortex_Bootstrapping"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  dpi = 300,
+  fig.width = 5,   # 1500 pixels / 300 dpi
+  fig.height = 4   # 1200 pixels / 300 dpi
+)
+```
+
+#Install R packages
+```{r install-packages}
+pkgs <- c("here", "ggplot2", "dplyr", "Seurat", "skmeans", "mclust", "tidyr", "ggrepel", "stringr", "igraph")
+to_install <- setdiff(pkgs, rownames(installed.packages()))
+if (length(to_install)) {
+  install.packages(to_install)
+}
+```
+
+#OPTIMAL PC SELECTION ALGO
+```{r quick-elbow}
+quick.elbow <- function(varpc,low=.08,max.pc=.9) {
+  ee <- varpc/sum(varpc) #proportinal eigenvalues
+  while(low>=max(ee)) { low <- low/2 } #when no principal component eigenvalues are large enough, cut low in half
+  lowie <- (ee<low) ; highie <- ee>low/8
+  low.ones <- which(lowie & highie)
+  others <- length(which(!lowie))
+  if(length(low.ones)>0) {
+    if(length(low.ones)==1) {
+      elbow <- low.ones
+    } else {
+      set <- ee[low.ones]
+      pc.drops <- abs(diff(set))/(set[1:(length(set)-1)])
+      infz <- is.infinite(pc.drops)
+      #print(pc.drops)
+      elbow <- which(pc.drops==max(pc.drops[!infz],na.rm=T))[1]+others
+    }
+  } else {
+    # if somehow there are no small eigenvalues, just choose the elbow as the second last
+    cat("no eigenvalues were significantly smaller than the previous\n")
+    elbow <- length(ee)
+  }
+  if(tail(cumsum(ee[1:elbow]),1)>max.pc) {
+    elbow <- which(cumsum(ee)>max.pc)[1]-1
+  }
+  if(elbow<1) {
+    warning("elbow calculation failed, return zero")
+    return(0)
+  }
+  elbow<-elbow + 1 # include last to be sure ..
+  names(elbow) <- NULL
+  return(elbow)
+}
+```
+
+#GENES FILTERING
+```{r gene-filter}
+library(stringr)
+genes_filter <- function(df, filters = c("IgFilter", "TrFilter", "riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter")) {
+  #ensure gene names are uppercase for consistent matching
+  geneNames <- toupper(rownames(df))
+  GenesToFilterOut <- integer(0)
+  if(is.null(filters)){
+    return(df)
+  }
+
+  #immunoglobulin genes (IGHV, IGKV)
+  if ("IgFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "IGHV") | str_starts(geneNames, "IGKV"))
+    )
+  }
+
+  #t-cell receptor genes (TRAV, TRBV)
+  if ("TrFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "TRAV") | str_starts(geneNames, "TRBV"))
+    )
+  }
+
+  #ribosomal genes (RPL, RPS)
+  if ("riboFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "RPL") | str_starts(geneNames, "RPS"))
+    )
+  }
+
+  #mitochondrial genes (MT-)
+  if ("mtFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "MT-"))
+    )
+  }
+
+  #GM-prefixed genes
+  if ("gmFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "GM"))
+    )
+  }
+
+  #genes ending with RIK
+  if ("rikFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_ends(geneNames, "RIK"))
+    )
+  }
+
+  #genes starting with "\\.", ENSG, or a regex pattern like XX000000
+  if ("dotFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(
+        str_starts(geneNames, "\\.") |
+        str_starts(geneNames, "ENSG") |
+        str_detect(geneNames, "^[A-Z]{2}\\d{6}")
+      )
+    )
+  }
+
+  #remove duplicate indices
+  GenesToFilterOut <- unique(GenesToFilterOut)
+
+  #return filtered dataframe
+  if (length(GenesToFilterOut) > 0) {
+    filtered_df <- df[-GenesToFilterOut, , drop = FALSE]
+  } else {
+    filtered_df <- df  # No genes to filter, return original
+  }
+
+  list(
+    counts=filtered_df,
+    filtered=setdiff(rownames(df), rownames(filtered_df))
+  )
+}
+```
+
+#PRINCIPAL GENES ALGO
+```{r main-algo}
+principalgenes<- function(data = NULL, pcs = -1, cut = -1, filters=c("IgFilter", "TrFilter", "riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter")) {
+
+  message(length(rownames(data)), ", ", length(colnames(data)))
+  message(paste0(filters))
+  if (is.null(data)) {
+    stop("Error: 'data' must be provided.")
+  }
+
+  if(cut == -1){
+    cut = 0.25
+  }
+  
+  message("filtering genes based on specifications")
+  data<-genes_filter(count_matrix, filters)
+  filtered_genes<-data$filtered
+  data<-data$counts
+  message("Post Filtering Dataset Dimensions: Rows: ", length(rownames(data)), ", Columns: ", length(colnames(data)))
+  
+  zero_cols<-which(colSums(data) == 0)
+  zero_var_rows <- apply(data, 1, var, na.rm = TRUE) == 0
+  zero_var_rows<-which(zero_var_rows)
+
+  message("Remove zero rows and remove zero columns until none are left")
+  while(length(zero_cols) != 0 || length(zero_var_rows)!=0){
+    zero_cols<-which(colSums(data) == 0)
+    if(length(zero_cols) > 0) {
+      data<-data[, -zero_cols]
+    }
+    zero_var_rows <- apply(data, 1, var, na.rm = TRUE) == 0
+    zero_var_rows<-which(zero_var_rows)
+    if(length(zero_var_rows) > 0) {
+      data<-data[-zero_var_rows, ]
+    }
+    message("Dataset Dimensions after removing zero rows and columns: Rows: ", length(rownames(data)), ", Columns: ", length(colnames(data)))
+  }
+  
+  message("Calculating optimal number of PCs via elbow method:")
+  if(pcs == -1 || pcs >= 20 || pcs >= 0.05*ncol(data)){
+    temp<- irlba::prcomp_irlba(t(data), n = min(20, 0.05*ncol(data)), retx = TRUE, center = TRUE, scale. = TRUE)
+    eig = temp$sdev^2
+    pcs = quick.elbow(eig)
+    rm(eig, temp)
+  }
+
+  message("Values set: pcs = ", pcs, ", chosen cutoff = ", cut)
+
+  #transpose the data to have genes as columns and cells as rows
+  rotated_output <- irlba::prcomp_irlba(t(data), n = pcs, retx = TRUE, center = TRUE, scale. = TRUE)
+
+  #prepare to represent results
+  summary<- summary(rotated_output)
+  loadings <- rotated_output$rotation
+  rownames(loadings) <- rownames(data) # Associate gene names with loadings
+
+  #compute variance explained by each PC
+  eigenvalues <- (rotated_output$sdev)^2
+  prop_var <- eigenvalues / sum(eigenvalues)
+  temp_obj <- data.frame(x=colnames(loadings), y = prop_var)
+
+  #plot PCA results
+  graph1<- ggplot2::ggplot(temp_obj, ggplot2::aes(x = x, y = y * 100)) +
+    ggplot2::geom_bar(stat = "identity", fill = "skyblue") +
+    ggplot2::geom_text(ggplot2::aes(label= round(y*100, 2)), vjust = +1.5)+
+    ggplot2::labs(x = NULL, y = NULL, title = NULL) +
+    ggplot2::theme_minimal() + ggplot2::theme(legend.position = "none")
+  plot(graph1)
+
+  #calculate absolute values of loadings and contribution percentages
+  loadings <- abs(loadings)
+  sumload <- colSums(loadings)
+  percent_cont <- loadings / sumload
+
+  #calculate total contribution to variance for each gene
+  scaled_contr<-sweep(percent_cont, 2, prop_var, FUN = "*")
+  tot_contr <- rowSums(scaled_contr)
+  
+  #select genes with total contribution in cut percentile
+  message("starting the cutoff process")
+  cumulative_gps<- 0
+  if (cut == 1){
+    result<- sort(decreasing = TRUE, tot_contr)
+  } else {
+
+    for (i in 1:length(tot_contr)){
+      result<-list()
+      if (is.na(tot_contr[i]) || is.infinite(tot_contr[i])){
+        stop("Error: contribution calculation produced NA or infinite values. Please check the input data.")
+      }
+
+      result[[i]] <- as.numeric(tot_contr[i])
+      cumulative_gps <- cumulative_gps + as.numeric(tot_contr[i])
+      if (cumulative_gps >= cut){
+        break
+      }
+    }
+    result<-unlist(result)
+  }
+
+  # Log transformation for top genes' contributions
+  logcont <- -10 * log10(result)
+
+  # Return results
+  list(
+    summary,
+    log_contributions = logcont, #-10*log10(gps), larger values imply less contribution
+    top_genes = result, #ordered top selected genes
+    rotated_output = rotated_output, #pca output
+    filtered = filtered_genes, #list of genes filtered out
+    count_matrix = data #filtered count matrix for use elsewhere
+  )
+
+}
+```
+
+#Global Library
+```{r here-library}
+library(here)
+```
+
+#Human_Primary_Motor_Cortex DATASET
+##Read in the dataset
+```{r read-data}
+
+input_file<-paste0(here(), "/Filtered_Input/Human_Primary_Motor_Cortex.csv")
+truth_file<-paste0(here(), "/Filtered_Input/Human_Primary_Motor_CortexLabels.csv")
+name<-"Human_Primary_Motor_Cortex"
+
+count_matrix<-read.csv(input_file, row.names = 1)
+rownames(count_matrix)<-gsub("-", "_", rownames(count_matrix)) # consistent naming purposes
+colnames(count_matrix)<-gsub("\\.", "-", colnames(count_matrix))
+```
+
+##Get principal genes and highlight them on the log_var_mean_plot
+```{r get-principal-genes}
+
+#plot variance vs mean expression
+library(ggplot2)
+library(dplyr)
+
+row_means<-rowMeans(count_matrix, na.rm=TRUE)
+row_var<- apply(count_matrix, 1, var, na.rm=TRUE)
+
+log_var_mean_df<-tibble(
+  gene_id=rownames(count_matrix),
+  log_mean = log10(row_means +  1),
+  log_var = log10(row_var + 1)
+)
+
+#get top principal genes
+set.seed(12345)
+principal_genes_results <- principalgenes(count_matrix, cut = 1, filters = c("riboFilter", "mtFilter", "gmFilter", "rikFilter"))
+filtered_counts<-principal_genes_results$count_matrix
+top_50_genes<-names(principal_genes_results$top_genes[1:50])
+
+#highlight top genes selected by principal genes method
+log_var_mean_df<- log_var_mean_df %>% mutate(highlight = gene_id %in% top_50_genes)
+```
+
+##PCA PLOT
+```{r pca-plot}
+PC1_and_PC2<-as.data.frame(principal_genes_results$rotated_output$x, row.names = colnames(filtered_counts))
+
+#get true labels
+full_true_labels<-read.csv(truth_file)
+full_true_labels$cell<-gsub("\\.", "-", full_true_labels$cell)
+full_true_labels$numeric_labels<-as.numeric(factor(
+  full_true_labels$label,
+  levels = unique(full_true_labels$label)
+))
+true_labels<-subset(full_true_labels, cell %in% colnames(filtered_counts))
+PC1_and_PC2$labels<-true_labels$label
+PC1_and_PC2$numeric_labels <- as.numeric(factor(
+  PC1_and_PC2$labels,
+  levels = unique(true_labels$label)
+))
+
+#PCA PLOT
+ggplot(PC1_and_PC2, aes(x=PC1, y=PC2, color=labels))+
+  geom_point(size=3)+
+  scale_color_brewer(palette="Set1",
+                     name = "Label") +
+  theme_minimal() + theme(legend.position = "none")+
+  labs(x = NULL, y = NULL, title = NULL)+
+  theme(plot.title=element_text(hjust=0.5))
+
+ggsave(filename = paste0(here(), "/Bootstrapping_Results/Human_Primary_Motor_Cortex_Results/Human_Primary_Motor_Cortex_PCA_Plot.jpg"),, 
+    dpi = 300)
+```
+
+##BUILD CUMULATIVE GENE LISTS BY THRESHOLD
+```{r build-cumulative-gene-lists}
+source(paste0(here(), "/clSensitivity.R"))
+library(skmeans)
+library(mclust)
+library(igraph)
+library(dplyr)
+library(ggplot2)
+
+thresholds <- seq(10, 50, by = 2)
+
+selectedGeneList <- list()
+current_gene_list <- list()
+currentpropsum <- 0
+threshold_index <- 1
+
+for(i in seq_along(principal_genes_results$top_genes)){
+  
+  current_gene_list <- append(current_gene_list, principal_genes_results$top_genes[i])
+  
+  currentpropsum <- currentpropsum + principal_genes_results$top_genes[i] * 100
+  
+  if(currentpropsum >= thresholds[threshold_index]){
+    selectedGeneList[[threshold_index]] <- current_gene_list
+    
+    print(paste("Threshold", thresholds[threshold_index], "reached at index", i))
+    
+    threshold_index <- threshold_index + 1
+    
+    if(threshold_index > length(thresholds)){
+      break
+    }
+  }
+}
+
+num_genes <- list()
+for (i in seq_along(selectedGeneList)){
+  num_genes[[i]]<-length(selectedGeneList[[i]])
+}
+num_genes<-unlist(num_genes)
+
+true_labels_vector <- setNames(PC1_and_PC2$numeric_labels, row.names(PC1_and_PC2))
+k_cls <- max(true_labels_vector)
+```
+
+##BUILD HVG GENE LISTS (SEURAT), MATCHED TO THE SAME THRESHOLDS AS PG
+```{r build-hvg-gene-lists}
+library(Seurat)
+
+seuratObject <- CreateSeuratObject(counts = as.matrix(count_matrix))
+Idents(seuratObject) <- "All_Cells"
+norm_seuratObject <- NormalizeData(seuratObject)
+seuratObject <- FindVariableFeatures(norm_seuratObject, selection.method = "dispersion", nfeatures = length(rownames(count_matrix))) #dispersion value = log(variance/mean)
+
+scored_hvg <- seuratObject[["RNA"]]@meta.data$vf_disp_data_mvp.dispersion
+names(scored_hvg) <- rownames(count_matrix) #restore original gene names (order-preserved)
+scored_hvg[is.na(scored_hvg)] <- 0
+scored_hvg <- sort(decreasing = TRUE, scored_hvg)
+HVGs <- names(scored_hvg) #descending-order HVG gene names, aligned with count_matrix rownames
+
+# Build HVG gene lists sized to match the number of genes selected by PG at each threshold
+HVGGeneList <- list()
+for (j in seq_along(num_genes)) {
+  HVGGeneList[[j]] <- HVGs[1:num_genes[j]]
+}
+```
+
+##BUILD UNION (PG + HVG) GENE LISTS AT EACH THRESHOLD
+```{r build-union-gene-lists}
+UnionGeneList <- list()
+for (j in seq_along(selectedGeneList)) {
+  UnionGeneList[[j]] <- unique(union(names(selectedGeneList[[j]]), HVGs[1:num_genes[j]]))
+}
+union_num_genes <- as.integer(sapply(UnionGeneList, length))
+```
+
+##SK_MEANS CLUSTERING ON RANDOM 80% CELL SUBSETS FOR EACH GENE-SELECTION METHOD
+```{r sk-means-subsampled-accuracy}
+n_subsets <- 5
+subset_frac <- 0.8
+seeds <- c(12345, 54672, 44182, 72198, 98230)
+
+all_cells <- colnames(count_matrix)
+subset_size <- floor(subset_frac * length(all_cells))
+
+# Matrices to hold accuracy: rows = subsets, columns = threshold levels
+accuracy_matrix_pg    <- matrix(NA_real_, nrow = n_subsets, ncol = length(selectedGeneList))
+accuracy_matrix_hvg   <- matrix(NA_real_, nrow = n_subsets, ncol = length(HVGGeneList))
+accuracy_matrix_union <- matrix(NA_real_, nrow = n_subsets, ncol = length(UnionGeneList))
+
+for (r in 1:n_subsets){
+  set.seed(seeds[r])
+  cell_subset <- sample(all_cells, subset_size)
+  sub_true_labels <- true_labels_vector[cell_subset]
+
+  print(paste("subset:", r))
+  for (j in seq_along(selectedGeneList)){
+    # Principal Genes
+    submat_pg <- count_matrix[names(selectedGeneList[[j]]), cell_subset]
+    set.seed(seeds[r])
+    sub_cluster_pg <- skmeans(x = t(log2(submat_pg + 1)), k = k_cls, control = list(verbose = FALSE))$cluster
+    sub_sens_pg <- clustSensitivity(sub_cluster_pg, sub_true_labels, as.character(1:k_cls))
+    accuracy_matrix_pg[r, j] <- as.numeric(sub_sens_pg[1, 2])
+
+    # Seurat HVGs
+    submat_hvg <- count_matrix[HVGGeneList[[j]], cell_subset]
+    set.seed(seeds[r])
+    sub_cluster_hvg <- skmeans(x = t(log2(submat_hvg + 1)), k = k_cls, control = list(verbose = FALSE))$cluster
+    sub_sens_hvg <- clustSensitivity(sub_cluster_hvg, sub_true_labels, as.character(1:k_cls))
+    accuracy_matrix_hvg[r, j] <- as.numeric(sub_sens_hvg[1, 2])
+
+    # PG / HVG Union
+    submat_union <- count_matrix[UnionGeneList[[j]], cell_subset]
+    set.seed(seeds[r])
+    sub_cluster_union <- skmeans(x = t(log2(submat_union + 1)), k = k_cls, control = list(verbose = FALSE))$cluster
+    sub_sens_union <- clustSensitivity(sub_cluster_union, sub_true_labels, as.character(1:k_cls))
+    accuracy_matrix_union[r, j] <- as.numeric(sub_sens_union[1, 2])
+
+    print(paste0(j, "th threshold clustering done"))
+  }
+}
+
+summarize_accuracy <- function(accuracy_matrix, n_subsets) {
+  mean_accuracy   <- colMeans(accuracy_matrix)
+  sd_accuracy     <- apply(accuracy_matrix, 2, sd)
+  se_accuracy     <- sd_accuracy / sqrt(n_subsets)
+  margin_of_error <- qt(0.975, df = n_subsets - 1) * se_accuracy
+  data.frame(
+    mean_accuracy   = as.numeric(mean_accuracy),
+    sd_accuracy     = as.numeric(sd_accuracy),
+    margin_of_error = as.numeric(margin_of_error),
+    ci_lower        = as.numeric(mean_accuracy - margin_of_error),
+    ci_upper        = as.numeric(mean_accuracy + margin_of_error)
+  )
+}
+
+pg_summary    <- summarize_accuracy(accuracy_matrix_pg, n_subsets)
+hvg_summary   <- summarize_accuracy(accuracy_matrix_hvg, n_subsets)
+union_summary <- summarize_accuracy(accuracy_matrix_union, n_subsets)
+
+points_sk <- data.frame(
+  thresholds        = as.numeric(thresholds),
+  num_genes         = as.integer(num_genes),
+  union_num_genes   = as.integer(union_num_genes),
+  PG_mean           = pg_summary$mean_accuracy,
+  PG_ci_lower       = pg_summary$ci_lower,
+  PG_ci_upper       = pg_summary$ci_upper,
+  HVG_mean          = hvg_summary$mean_accuracy,
+  HVG_ci_lower      = hvg_summary$ci_lower,
+  HVG_ci_upper      = hvg_summary$ci_upper,
+  Union_mean        = union_summary$mean_accuracy,
+  Union_ci_lower    = union_summary$ci_lower,
+  Union_ci_upper    = union_summary$ci_upper
+)
+
+# Long (tidy) format for ggplot
+plot_df1 <- bind_rows(
+  data.frame(thresholds = points_sk$thresholds, num_genes = points_sk$num_genes,
+             union_num_genes = points_sk$union_num_genes,
+             mean_accuracy = points_sk$PG_mean, ci_lower = points_sk$PG_ci_lower,
+             ci_upper = points_sk$PG_ci_upper, metric = "PG_sensitivity"),
+  data.frame(thresholds = points_sk$thresholds, num_genes = points_sk$num_genes,
+             union_num_genes = points_sk$union_num_genes,
+             mean_accuracy = points_sk$HVG_mean, ci_lower = points_sk$HVG_ci_lower,
+             ci_upper = points_sk$HVG_ci_upper, metric = "HVG_sensitivity"),
+  data.frame(thresholds = points_sk$thresholds, num_genes = points_sk$num_genes,
+             union_num_genes = points_sk$union_num_genes,
+             mean_accuracy = points_sk$Union_mean, ci_lower = points_sk$Union_ci_lower,
+             ci_upper = points_sk$Union_ci_upper, metric = "PG_HVG_Union")
+)
+
+#control legend order
+plot_df1$metric <- factor(plot_df1$metric,
+                           levels = c("PG_sensitivity", "HVG_sensitivity", "PG_HVG_Union"))
+
+#add labels for gene-count annotations
+plot_df1$label_val <- NA
+plot_df1$label_val[plot_df1$metric == "PG_sensitivity"] <- plot_df1$num_genes[plot_df1$metric == "PG_sensitivity"]
+plot_df1$label_val[plot_df1$metric == "PG_HVG_Union"] <- plot_df1$union_num_genes[plot_df1$metric == "PG_HVG_Union"]
+
+write.csv(plot_df1, file = paste0(here(), "/Bootstrapping_Data_Hold/Human_Primary_Motor_Cortex_PG_HVG_Union_CumulativeScore_Subsampled_Accuracy.csv"))
+```
+
+##PLOT MEAN CLUSTERING SENSITIVITY VS CUMULATIVE SCORE WITH 95% CI (PG, HVG, UNION)
+```{r plot-subsampled-accuracy}
+ggplot(plot_df1, aes(x = thresholds, y = mean_accuracy, color = metric)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), width = 0.5) +
+
+  # PG labels
+  geom_text(
+    data = subset(plot_df1, metric == "PG_sensitivity"),
+    aes(label = label_val),
+    color = "#1BB7D8", vjust = +2, size = 3, check_overlap = TRUE
+  ) +
+
+  # Union labels
+  geom_text(
+    data = subset(plot_df1, metric == "PG_HVG_Union"),
+    aes(label = label_val),
+    color = "darkgreen", vjust = -2, size = 3, check_overlap = TRUE
+  ) +
+
+  geom_smooth(
+    method = "loess",
+    method.args = list(span = 1, degree = 1, surface = "direct"),
+    se = FALSE
+  ) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = NULL, y = NULL, title = NULL) +
+  scale_color_manual(
+    breaks = c("PG_sensitivity", "HVG_sensitivity", "PG_HVG_Union"),
+    values = c(
+      "PG_sensitivity"  = "#1BB7D8",
+      "HVG_sensitivity" = "#E55B1E",
+      "PG_HVG_Union"    = "#2C9F45"
+    ),
+    labels = c(
+      "PG_sensitivity"  = "Principal Genes",
+      "HVG_sensitivity" = "Seurat's HVG",
+      "PG_HVG_Union"    = "HVG_PG_Union"
+    )
+  ) +
+  theme_minimal() + theme(legend.position = "none")
+
+ggsave(filename = paste0(here(), "/Bootstrapping_Results/Human_Primary_Motor_Cortex_Results/Human_Primary_Motor_Cortex_PG_HVG_Union_CumulativeScore_Subsampled_Sensitivity.jpg"),, 
+     dpi = 300)
+```

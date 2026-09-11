@@ -1,6 +1,5 @@
 ---
-title: "Pollen_Short_Filtering"
-date: "2025-08-07"
+title: "Azimuth_MMC_Sensitivity_ARI"
 output:
   html_document:
     toc: yes
@@ -9,11 +8,16 @@ output:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  dpi = 300,
+  fig.width = 5,   # 1500 pixels / 300 dpi
+  fig.height = 4   # 1200 pixels / 300 dpi
+)
 ```
 
 #Install R packages
-```{r}
-pkgs <- c("here", "ggplot2", "dplyr", "Seurat", "skmeans", "mclust", "tidyr", "ggrepel", "stringr", "igraph")
+```{r install-packages}
+pkgs <- c("here", "ggplot2", "dplyr", "Seurat", "skmeans", "mclust", "tidyr", "ggrepel", "stringr")
 to_install <- setdiff(pkgs, rownames(installed.packages()))
 if (length(to_install)) {
   install.packages(to_install)
@@ -150,7 +154,6 @@ principalgenes<- function(data = NULL, pcs = -1, cut = -1, filters=c("IgFilter",
 
   message(length(rownames(data)), ", ", length(colnames(data)))
   message(paste0(filters))
-  # Check if data is provided
   if (is.null(data)) {
     stop("Error: 'data' must be provided.")
   }
@@ -210,12 +213,8 @@ principalgenes<- function(data = NULL, pcs = -1, cut = -1, filters=c("IgFilter",
   graph1<- ggplot2::ggplot(temp_obj, ggplot2::aes(x = x, y = y * 100)) +
     ggplot2::geom_bar(stat = "identity", fill = "skyblue") +
     ggplot2::geom_text(ggplot2::aes(label= round(y*100, 2)), vjust = +1.5)+
-    ggplot2::labs(
-      x = "Principal Components",
-      y = "Percentage (%)",
-      title = "Proportion of Variance Each PC explains"
-    ) +
-    ggplot2::theme_minimal()
+    ggplot2::labs(x = NULL, y = NULL, title = NULL) +
+    ggplot2::theme_minimal() + ggplot2::theme(legend.position = "none")
   plot(graph1)
 
   #calculate absolute values of loadings and contribution percentages
@@ -270,22 +269,22 @@ principalgenes<- function(data = NULL, pcs = -1, cut = -1, filters=c("IgFilter",
 library(here)
 ```
 
-#POLLEN DATASET
+#AZIMUTH DATASET
 ##Read in the dataset
-```{r}
+```{r read-in-data}
 
-input_file<-"/Pollen_TPM_Matrix.csv.csv"
-truth_file<-"/Pollen_Labels.csv"
-name<-"Pollen"
+input_file<-paste0(here(), "/Filtered_Input/Azimuth_filtereddatQC_basicQC_LibraryIDs.csv")
+truth_file<-paste0(here(), "/Filtered_Input/Azimuth_ClusterLabels.csv")
+name<-"Azimuth"
 
-count_matrix<-read.csv(paste0(here(), input_file), row.names = 1)
+count_matrix<-read.csv(input_file, row.names = 1)
 
 rownames(count_matrix)<-gsub("-", "_", rownames(count_matrix))
 colnames(count_matrix)<-gsub("\\.", "-", colnames(count_matrix))
 ```
 
 ##Get principal genes and highlight them on the log_var_mean_plot
-```{r}
+```{r principal-genes-running}
 
 #plot variance vs mean expression
 library(ggplot2)
@@ -302,15 +301,21 @@ log_var_mean_df<-tibble(
 
 set.seed(12345)
 principal_genes_results <- principalgenes(count_matrix, cut = 1, filters = c("riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter"))
+filtered_counts<-principal_genes_results$count_matrix
 top_100_genes<-names(principal_genes_results$top_genes[1:50])
-
 ```
 ##PCA PLOT
-```{r}
-PC1_and_PC2<-as.data.frame(principal_genes_results$rotated_output$x, row.names = colnames(count_matrix))
+```{r plot-pca}
+PC1_and_PC2<-as.data.frame(principal_genes_results$rotated_output$x, row.names = colnames(filtered_counts))
 
 #get true labels
-true_labels<-read.csv(paste0(here() , truth_file))
+full_true_labels<-read.csv(truth_file)
+full_true_labels$cell<-gsub("\\.", "-", full_true_labels$cell)
+full_true_labels$numeric_labels<-as.numeric(factor(
+  full_true_labels$label,
+  levels = unique(full_true_labels$label)
+))
+true_labels<-subset(full_true_labels, cell %in% colnames(filtered_counts))
 PC1_and_PC2$labels<-true_labels$label
 PC1_and_PC2$numeric_labels <- as.numeric(factor(
   PC1_and_PC2$label,
@@ -320,50 +325,41 @@ PC1_and_PC2$numeric_labels <- as.numeric(factor(
 #PCA PLOT
 ggplot(PC1_and_PC2, aes(x=PC1, y=PC2, color=labels))+
   geom_point(size=3)+
-  scale_color_brewer(palette="Set1",
+  scale_color_brewer(palette="Spectral",
                      name = "Label") +
-  theme_minimal()+
-  labs(x = "PC1", y = "PC2", title="Pollen PCA Plot")+
+  theme_minimal() + theme(legend.position = "none")+
+  labs(x = NULL, y = NULL, title = NULL)+
   theme(plot.title=element_text(hjust=0.5))
-ggsave(filename = paste0(here(), "/results/Pollen_Results/Pollen_PCA_Plot.jpg"),, 
+
+ggsave(filename = paste0(here(), "/Sensitivity_ARI_Results/Azimuth_Results/Azimuth_PCA_Plot.jpg"),, 
      dpi = 300)
 ```
 
 ##SK_MEANS CLUSTERING USING CUMULATIVE SCORE
-```{r}
+```{r sk-means-clustering} 
 source(paste0(here(), "/clSensitivity.R"))
 library(skmeans)
-library(igraph)
 
-# Define the thresholds (scaled values corresponding to 5%, 10%, ... 100%)
 thresholds <- seq(10, 50, by = 2)
 
-selectedGeneList <- list()  # This will store the cumulative gene lists for each threshold.
-current_gene_list <- list()       # This accumulates genes as we iterate.
-currentpropsum <- 0               # Running sum of scaled values.
-threshold_index <- 1              # To track which threshold we're currently targeting.
+selectedGeneList <- list()
+current_gene_list <- list()
+currentpropsum <- 0
+threshold_index <- 1
 
-# Loop over each gene in principal_genes_results$top_genes
 for(i in seq_along(principal_genes_results$top_genes)){
   
-  # Append the current gene (its value, with name retained) to the cumulative gene list.
   current_gene_list <- append(current_gene_list, principal_genes_results$top_genes[i])
   
-  # Update the running sum using the scaled value.
   currentpropsum <- currentpropsum + principal_genes_results$top_genes[i] * 100
   
-  # Check if we've reached or exceeded the current threshold.
   if(currentpropsum >= thresholds[threshold_index]){
-    # Store the current cumulative gene list at the proper index.
     selectedGeneList[[threshold_index]] <- current_gene_list
     
-    # Optionally, print some info for debugging.
     print(paste("Threshold", thresholds[threshold_index], "reached at index", i))
     
-    # Move on to the next threshold.
     threshold_index <- threshold_index + 1
     
-    # If we've filled all thresholds, exit the loop.
     if(threshold_index > length(thresholds)){
       break
     }
@@ -382,33 +378,33 @@ for (i in seq_along(principal_genes_results$top_genes)){
 }
 
 true_labels_vector <- setNames(PC1_and_PC2$numeric_labels, row.names(PC1_and_PC2))
-
 k_cls <- max(true_labels_vector)
-# uncomment the line below to select specific number of clusters
-# k_cls <- 3
+
 PG_groups_sk <- list()
 PG_results_sk <-list()
 
 # SKmeans clustering
+set.seed(12345)
 for(i in 1:length(selectedGeneList)){
   set.seed(12345)
-  submat<-count_matrix[names(selectedGeneList[[i]]),]
-  PG_groups_sk[[i]]<-skmeans(x = t(log2(submat + 1)) , k = k_cls, control = list(verbose = FALSE))$cluster
+  PG_groups_sk[[i]]<-skmeans(x = t(log2(count_matrix[names(selectedGeneList[[i]]),] + 1)) , k = k_cls, control = list(verbose = FALSE))$cluster
   print(i)
 }
 
 for (i in 1:length(selectedGeneList)){
   PG_results_sk[[i]] <- clustSensitivity(PG_groups_sk[[i]], true_labels_vector, as.character(1:k_cls))
 }
+
 labels_vs_clust <- data.frame(
     PG_labels     = PG_groups_sk[[1]]
 )
 labels_vs_clust$truth_labels <- true_labels_vector[rownames(labels_vs_clust)]
-celltype_vec <- setNames(true_labels$label, true_labels$cell_id)
+celltype_vec <- setNames(full_true_labels$label, full_true_labels$cell)
 labels_vs_clust$celltype <- celltype_vec[rownames(labels_vs_clust)]
-write.csv(labels_vs_clust, paste0(here(), "/Data_Hold/", name, "_truth_vs_clustering.csv"))
+write.csv(labels_vs_clust, paste0(here(), "/Main_Data_Hold/", name, "_truth_vs_clustering.csv"))
 smaller_count_matrix<-count_matrix[names(principal_genes_results$top_genes[1:100]),]
-write.csv(smaller_count_matrix, paste0(here(), "/Data_Hold/", name, "_top100PG_count_matrix.csv"))
+write.csv(smaller_count_matrix, paste0(here(), "/Main_Data_Hold/", name, "_top100PG_count_matrix.csv"))
+
 ```
 
 ##SK_MEANS CLUSTERING USING HVGS
@@ -416,11 +412,11 @@ write.csv(smaller_count_matrix, paste0(here(), "/Data_Hold/", name, "_top100PG_c
 library(Seurat)
 
 seuratObject<- CreateSeuratObject(counts = as.matrix(count_matrix))
+Idents(seuratObject) <- "All_Cells"
 norm_seuratObject <- NormalizeData(seuratObject)
-seuratObject<- FindVariableFeatures(norm_seuratObject, selection.method = "dispersion", nfeatures = length(principal_genes_results$top_genes)) #dispersion values is log(variance/mean)
+seuratObject<- FindVariableFeatures(norm_seuratObject, selection.method = "dispersion", nfeatures = length(row.names(count_matrix))) #dispersion values is log(variance/mean)
 HVGs <- VariableFeatures(seuratObject) #Vector of descending order HVGs
 HVGs<-gsub("-", "_", HVGs)
-HVGs<-HVGs[HVGs %in% rownames(count_matrix)]
 
 positions<-match(HVGs, rownames(count_matrix))
 
@@ -429,26 +425,29 @@ names(scored_hvg) <- HVGs
 scored_hvg[is.na(scored_hvg)] <- 0
 scored_hvg <- sort(decreasing = TRUE, scored_hvg)
 
-commongenes<-intersect(names(principal_genes_results$top_genes), names(scored_hvg))
+#COMPARE HVGs TO PGs list
+setdiff(HVGs, names(unlist(selectedGeneList)))
 
 # SKmeans clustering
 HVG_groups_sk <- list()
 HVG_results_sk <-list()
 
+set.seed(12345)
 for(i in seq_along(num_genes)){
   set.seed(12345)
-  submat<-count_matrix[HVGs[1:min(length(HVGs),as.numeric(num_genes[i]))], ]
-  HVG_groups_sk[[i]]<-skmeans(x = t(log2(submat + 1)) , k = k_cls, control = list(verbose = FALSE))$cluster
+  HVG_groups_sk[[i]]<-skmeans(x = t(log2(count_matrix[HVGs[1:as.numeric(num_genes[i])], ] + 1)) , k = k_cls, control = list(nruns=1, verbose = FALSE))$cluster
   print(num_genes[i])
 }
+#HVG_groups_sk[[20]]<-skmeans(x=t(log2(count_matrix + 1)), k=k_cls, control = list(verbose = FALSE))$cluster
 
+true_labels_vector <- setNames(full_true_labels$numeric_labels, full_true_labels$cell)
 for (i in seq_along(num_genes)){
   HVG_results_sk[[i]] <- clustSensitivity(HVG_groups_sk[[i]], true_labels_vector, as.character(1:k_cls))
 }
 
 ```
 
-##SK MEANS CLUSTERING USING UNION OF HVGS AND Pollen AT EACH POINT
+##SK MEANS CLUSTERING USING UNION OF HVGS AND PBMCS AT EACH POINT
 ```{r}
 pg_hvg_union<-list()
 
@@ -463,10 +462,10 @@ Union_results_sk <-list()
 # SKmeans clustering
 for(i in 1:length(selectedGeneList)){
   set.seed(12345)
-  submat<-count_matrix[pg_hvg_union[[i]],]
-  Union_groups_sk[[i]]<-skmeans(x = t(log2(submat + 1)) , k = k_cls, control = list(verbose = FALSE))$cluster
+  Union_groups_sk[[i]]<-skmeans(x = t(log2(count_matrix[pg_hvg_union[[i]],] + 1)) , k = k_cls, control = list(verbose = FALSE))$cluster
   print(i)
 }
+#Union_groups_sk[[20]]<-skmeans(x=t(log2(count_matrix + 1)), k=k_cls, control = list(verbose = FALSE))$cluster
 
 for (i in 1:length(selectedGeneList)){
   Union_results_sk[[i]] <- clustSensitivity(Union_groups_sk[[i]], true_labels_vector, as.character(1:k_cls))
@@ -509,8 +508,6 @@ points_sk <- data.frame(
   union_num_genes = as.integer(sapply(pg_hvg_union, length))
 )
 
-write.csv(points_sk, file=paste0(here(), "/Data_Hold/Pollen_SKM_accuracy_results.csv"))
-
 # Long (tidy) format for ggplot
 plot_df1 <- points_sk %>%
   pivot_longer(
@@ -551,10 +548,7 @@ ggplot(plot_df1, aes(x = thresholds, y = sensitivity, color = metric)) +
     se = FALSE
   ) +
   scale_y_continuous(limits = c(0, 1)) +
-  labs(x = "Cumulative Score",
-       y = "Clustering Sensitivity",
-       color = "Gene Selection Method",
-       title = "SK-means Clustering Sensitivity for Pollen Dataset: Loess Regression") +
+  labs(x = NULL, y = NULL, title = NULL) +
   scale_color_manual(
     breaks = c("PG_sensitivity","HVG_sensitivity","PG_HVG_Union"),
     values = c(
@@ -568,9 +562,9 @@ ggplot(plot_df1, aes(x = thresholds, y = sensitivity, color = metric)) +
       "PG_HVG_Union" = "HVG_PG_Union"
     )
   ) +
-  theme_minimal()
+  theme_minimal() + theme(legend.position = "none")
 
-ggsave(filename = paste0(here(), "/results/Pollen_Results/Pollen_PG_HVG_UNION_Sensitivity.jpg"),, 
+ggsave(filename = paste0(here(), "/Sensitivity_ARI_Results/Azimuth_Results/Azimuth_PG_HVG_UNION_Sensitivity.jpg"),, 
      dpi = 300)
 
 #adjustedRandIndex
@@ -592,7 +586,6 @@ points_sk <- data.frame(
   num_genes = as.integer(num_genes),
   union_num_genes = as.integer(sapply(pg_hvg_union, length))
 )
-write.csv(points_sk, file=paste0(here(), "/Data_Hold/Pollen_SKM_rand_index_results.csv"))
 
 # Long (tidy) format for ggplot
 plot_df <- points_sk %>%
@@ -636,10 +629,7 @@ ggplot(plot_df, aes(x = thresholds, y = adjustedRandIndex, color = metric)) +
     se = FALSE
   ) +
   scale_y_continuous(limits = c(0, 1)) +
-  labs(x = "Cumulative Score",
-       y = "RandIndex",
-       color = "Gene Selection Method",
-       title = "SK-means Rand Index for Pollen Dataset: Loess Regression") +
+  labs(x = NULL, y = NULL, title = NULL) +
   scale_color_manual(
     breaks = c("PG_randIndex","HVG_randIndex","PG_HVG_UnionRand"),
     values = c(
@@ -653,12 +643,13 @@ ggplot(plot_df, aes(x = thresholds, y = adjustedRandIndex, color = metric)) +
       "PG_HVG_UnionRand" = "HVG_PG_Union"
     )
   ) +
-  theme_minimal()
+  theme_minimal() + theme(legend.position = "none")
 
-ggsave(filename = paste0(here(), "/results/Pollen_Results/Pollen_PG_HVG_UNION_RandIndex.jpg"),, 
+ggsave(filename = paste0(here(), "/Sensitivity_ARI_Results/Azimuth_Results/Azimuth_PG_HVG_UNION_RandIndex.jpg"),, 
      dpi = 300)
 
 ```
+
 ##NO OUTLIERS
 ```{r}
 add_loess_ci <- function(df, span = 1, degree = 1, surface = "direct") {
@@ -683,7 +674,6 @@ plot_df1 <- plot_df1 %>%
 # Filter out outliers
 plot_df1_filtered <- plot_df1 %>% filter(!outlier)
 
-# Now plot the filtered points only
 ggplot(plot_df1_filtered, aes(x = thresholds, y = sensitivity, color = metric)) +
   geom_point(size = 2) +
 
@@ -707,10 +697,7 @@ ggplot(plot_df1_filtered, aes(x = thresholds, y = sensitivity, color = metric)) 
     se = FALSE
   ) +
   scale_y_continuous(limits = c(0, 1)) +
-  labs(x = "Cumulative Score",
-       y = "Clustering Sensitivity",
-       color = "Gene Selection Method",
-       title = "SK-means Clustering Sensitivity for Pollen Dataset: Loess Regression Outliers Removed") +
+  labs(x = NULL, y = NULL, title = NULL) +
   scale_color_manual(
     breaks = c("PG_sensitivity","HVG_sensitivity","PG_HVG_Union"),
     values = c(
@@ -724,9 +711,9 @@ ggplot(plot_df1_filtered, aes(x = thresholds, y = sensitivity, color = metric)) 
       "PG_HVG_Union"    = "HVG_PG_Union"
     )
   ) +
-  theme_minimal()
+  theme_minimal() + theme(legend.position = "none")
 
-ggsave(filename = paste0(here(), "/results/Pollen_Results/Pollen_PG_HVG_UNION_No_Outliers_Sensitivity.jpg"),, 
+ggsave(filename = paste0(here(), "/Sensitivity_ARI_Results/Azimuth_Results/Azimuth_PG_HVG_UNION_No_Outliers_Sensitivity.jpg"),, 
      dpi = 300)
 
 add_loess_ci <- function(df, span = 1, degree = 1, surface = "direct") {
@@ -751,7 +738,6 @@ plot_df <- plot_df %>%
 # Filter out outliers
 plot_df_filtered <- plot_df %>% filter(!outlier)
 
-# Now plot the filtered points only
 ggplot(plot_df_filtered, aes(x = thresholds, y = adjustedRandIndex, color = metric)) +
   geom_point(size = 2) +
 
@@ -775,10 +761,7 @@ ggplot(plot_df_filtered, aes(x = thresholds, y = adjustedRandIndex, color = metr
     se = FALSE
   ) +
   scale_y_continuous(limits = c(0, 1)) +
-  labs(x = "Cumulative Score",
-       y = "Rand Index",
-       color = "Gene Selection Method",
-       title = "SK-means Clustering Rand Index for Pollen Dataset: Loess Regression Outliers Removed") +
+  labs(x = NULL, y = NULL, title = NULL) +
   scale_color_manual(
     breaks = c("PG_randIndex","HVG_randIndex","PG_HVG_UnionRand"),
     values = c(
@@ -792,9 +775,9 @@ ggplot(plot_df_filtered, aes(x = thresholds, y = adjustedRandIndex, color = metr
       "PG_HVG_UnionRand"    = "HVG_PG_Union"
     )
   ) +
-  theme_minimal()
+  theme_minimal() + theme(legend.position = "none")
 
-ggsave(filename = paste0(here(), "/results/Pollen_Results/Pollen_PG_HVG_UNION_No_Outliers_Sensitivity.jpg"),, 
+ggsave(filename = paste0(here(), "/Sensitivity_ARI_Results/Azimuth_Results/Azimuth_PG_HVG_UNION_No_Outliers_RandIndex.jpg"),, 
      dpi = 300)
 
 ```
@@ -803,8 +786,16 @@ ggsave(filename = paste0(here(), "/results/Pollen_Results/Pollen_PG_HVG_UNION_No
 ```{r}
 #Common genes between TOP 100 Principal Genes results and Highly Variable Genes
 common_gene_names<- intersect(names(principal_genes_results$top_genes[1:100]), names(scored_hvg[1:100]))
+temp<-principal_genes_results$top_genes[common_gene_names]
+common_gene_names<-names(temp)
+
 pg_only_gene_names <- setdiff(names(principal_genes_results$top_genes[1:100]), common_gene_names)
+temp<-principal_genes_results$top_genes[pg_only_gene_names]
+pg_only_gene_names<-names(temp)
+
 hvg_only_gene_names <-setdiff(names(scored_hvg[1:100]), common_gene_names)
+temp<-scored_hvg[hvg_only_gene_names]
+hvg_only_gene_names<-names(temp)
 
 #Ranks of Principal Genes based on scores
 pps_ranks <- rank(-as.numeric(principal_genes_results$top_genes))
@@ -839,8 +830,8 @@ raw_scores_df <- data.frame(
   Mean = round(mean_values[names(principal_genes_results$top_genes[1:100])], 4)
 )
 
-write.csv(intersect_df, file = paste0(here(), "/Data_Hold/Pollen_PPS_HVG_Variance_Mean_Intersect.csv"))
-write.csv(raw_scores_df, file = paste0(here(), "/Data_Hold/Pollen_PPS_HVG_Variance_Mean_Top100.csv"))
+write.csv(intersect_df, file = paste0(here(), "/Main_Data_Hold/Azimuth_PPS_HVG_Variance_Mean_Intersect.csv"))
+write.csv(raw_scores_df, file = paste0(here(), "/Main_Data_Hold/Azimuth_PPS_HVG_Variance_Mean_Top100.csv"))
 ```
 
 ##FINAL PLOTS FROM HVG-only genes and PPS-only genes
@@ -901,12 +892,8 @@ ggplot() +
     aes(x = PPS, y = Dispersion, label = genes, color = category),
     size = 2.5, max.overlaps = Inf, show.legend = FALSE
   ) +
-  labs(
-    x = "Principal Score",
-    y = "Dispersion",
-    title = "PBMC: Principal Score vs Dispersion — Top 20 highlighted by method"
-  ) +
-  theme_minimal() +
+  labs(x = NULL, y = NULL, title = NULL) +
+  theme_minimal() + theme(legend.position = "none") +
   scale_color_manual(
     values = c(
       "PG only"       = "#1BB7D8",
@@ -915,8 +902,9 @@ ggplot() +
     )
   ) +
   theme(plot.title = element_text(hjust = 0.5))
-ggsave(filename = paste0(here(), "/results/Pollen_Results/Pollen_PS_Dispersion_Comparison.jpg"),, 
+ggsave(filename = paste0(here(), "/Sensitivity_ARI_Results/Azimuth_Results/Azimuth_PS_Dispersion_Comparison.jpg"),, 
      dpi = 300)
+
 
 # Build comparison_df with all categories
 comparison_df <- log_var_mean_df %>%
@@ -953,12 +941,8 @@ ggplot() +
     aes(x = log_mean, y = log_var, label = gene_id, color = category),
     size = 2.5, max.overlaps = Inf, show.legend = FALSE
   ) +
-  labs(
-    x = "log10 mean expression",
-    y = "log10 variance",
-    title = "Pollen Top 20 genes: Log10 mean expression vs variance"
-  ) +
-  theme_minimal() +
+  labs(x = NULL, y = NULL, title = NULL) +
+  theme_minimal() + theme(legend.position = "none") +
   scale_color_manual(
     values = c(
       "PG only"       = "#1BB7D8",
@@ -969,25 +953,32 @@ ggplot() +
   theme(plot.title = element_text(hjust = 0.5)) +
   geom_abline(slope = 1, intercept = 0, linetype = 2, color = "red")
 
-ggsave(filename = paste0(here(), "/results/Pollen_Results/Pollen_PG_HVG_INTERSECT_Log10_mean_variance.jpg"),, 
+ggsave(filename = paste0(here(), "/Sensitivity_ARI_Results/Azimuth_Results/Azimuth_PG_HVG_INTERSECT_Log10_mean_variance.jpg"),, 
      dpi = 300)
 
 ##VIOLIN PLOT
+
 VlnPlot(norm_seuratObject, features=pg_only_gene_names[1:9]) & 
   theme(axis.title.x = element_blank(),
-        axis.text.x = element_blank())
-ggsave(filename = paste0(here(), "/results/Pollen_Results/Pollen_PG_Only_Violin_Plot.jpg"),, 
+        axis.text.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.position = "none")
+ggsave(filename = paste0(here(), "/Sensitivity_ARI_Results/Azimuth_Results/Azimuth_PG_Only_Violin_Plot.jpg"),, 
      dpi = 300)
 
 VlnPlot(norm_seuratObject, features=hvg_only_gene_names[1:9]) & 
   theme(axis.title.x = element_blank(),
-        axis.text.x = element_blank())
-ggsave(filename = paste0(here(), "/results/Pollen_Results/Pollen_HVG_Only_Violin_Plot.jpg"),, 
+        axis.text.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.position = "none")
+ggsave(filename = paste0(here(), "/Sensitivity_ARI_Results/Azimuth_Results/Azimuth_HVG_Only_Violin_Plot.jpg"),, 
      dpi = 300)
 
 VlnPlot(norm_seuratObject, features=common_gene_names[1:9]) & 
   theme(axis.title.x = element_blank(),
-        axis.text.x = element_blank())
-ggsave(filename = paste0(here(), "/results/Pollen_Results/Pollen_PG_HVG_INTERSECT_Violin_Plot.jpg"),, 
-    dpi = 300)
+        axis.text.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.position = "none")
+ggsave(filename = paste0(here(), "/Sensitivity_ARI_Results/Azimuth_Results/Azimuth_PG_HVG_INTERSECT_Violin_Plot.jpg"),, 
+     dpi = 300)
 ```

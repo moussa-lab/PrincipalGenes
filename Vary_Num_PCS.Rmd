@@ -1,0 +1,241 @@
+---
+title: "Vary_Num_PCs"
+output: html_document
+date: "2026-08-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  dpi = 300,
+  fig.width = 5,   # 1500 pixels / 300 dpi
+  fig.height = 4   # 1200 pixels / 300 dpi
+)
+```
+
+#Install R packages
+```{r install-packages}
+pkgs <- c("here", "ggplot2", "dplyr", "Seurat", "skmeans", "mclust", "tidyr", "ggrepel", "stringr", "igraph")
+to_install <- setdiff(pkgs, rownames(installed.packages()))
+if (length(to_install)) {
+  install.packages(to_install)
+}
+```
+
+#OPTIMAL PC SELECTION ALGO
+```{r quick-elbow}
+quick.elbow <- function(varpc,low=.08,max.pc=.9) {
+  ee <- varpc/sum(varpc) #proportinal eigenvalues
+  while(low>=max(ee)) { low <- low/2 } #when no principal component eigenvalues are large enough, cut low in half
+  lowie <- (ee<low) ; highie <- ee>low/8
+  low.ones <- which(lowie & highie)
+  others <- length(which(!lowie))
+  if(length(low.ones)>0) {
+    if(length(low.ones)==1) {
+      elbow <- low.ones
+    } else {
+      set <- ee[low.ones]
+      pc.drops <- abs(diff(set))/(set[1:(length(set)-1)])
+      infz <- is.infinite(pc.drops)
+      #print(pc.drops)
+      elbow <- which(pc.drops==max(pc.drops[!infz],na.rm=T))[1]+others
+    }
+  } else {
+    # if somehow there are no small eigenvalues, just choose the elbow as the second last
+    cat("no eigenvalues were significantly smaller than the previous\n")
+    elbow <- length(ee)
+  }
+  if(tail(cumsum(ee[1:elbow]),1)>max.pc) {
+    elbow <- which(cumsum(ee)>max.pc)[1]-1
+  }
+  if(elbow<1) {
+    warning("elbow calculation failed, return zero")
+    return(0)
+  }
+  elbow<-elbow + 1 # include last to be sure ..
+  names(elbow) <- NULL
+  return(elbow)
+}
+```
+
+#GENES FILTERING
+```{r gene-filter}
+library(stringr)
+genes_filter <- function(df, filters = c("IgFilter", "TrFilter", "riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter")) {
+  #ensure gene names are uppercase for consistent matching
+  geneNames <- toupper(rownames(df))
+  GenesToFilterOut <- integer(0)
+  if(is.null(filters)){
+    return(df)
+  }
+
+  #immunoglobulin genes (IGHV, IGKV)
+  if ("IgFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "IGHV") | str_starts(geneNames, "IGKV"))
+    )
+  }
+
+  #t-cell receptor genes (TRAV, TRBV)
+  if ("TrFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "TRAV") | str_starts(geneNames, "TRBV"))
+    )
+  }
+
+  #ribosomal genes (RPL, RPS)
+  if ("riboFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "RPL") | str_starts(geneNames, "RPS"))
+    )
+  }
+
+  #mitochondrial genes (MT-)
+  if ("mtFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "MT-"))
+    )
+  }
+
+  #GM-prefixed genes
+  if ("gmFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "GM"))
+    )
+  }
+
+  #genes ending with RIK
+  if ("rikFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_ends(geneNames, "RIK"))
+    )
+  }
+
+  #genes starting with "\\.", ENSG, or a regex pattern like XX000000
+  if ("dotFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(
+        str_starts(geneNames, "\\.") |
+        str_starts(geneNames, "ENSG") |
+        str_detect(geneNames, "^[A-Z]{2}\\d{6}")
+      )
+    )
+  }
+
+  #remove duplicate indices
+  GenesToFilterOut <- unique(GenesToFilterOut)
+
+  #return filtered dataframe
+  if (length(GenesToFilterOut) > 0) {
+    filtered_df <- df[-GenesToFilterOut, , drop = FALSE]
+  } else {
+    filtered_df <- df  # No genes to filter, return original
+  }
+
+  list(
+    counts=filtered_df,
+    filtered=setdiff(rownames(df), rownames(filtered_df))
+  )
+}
+```
+
+```{r principal-genes-algo}
+principalgenes <- function(count_matrix, pcs, filters) {
+  data <- genes_filter(count_matrix, filters)$counts
+  repeat {                                    # drop zero cells / zero-variance genes until stable
+    zc <- which(colSums(data) == 0); if (length(zc)) data <- data[, -zc]
+    zr <- which(apply(data, 1, var, na.rm = TRUE) == 0); if (length(zr)) data <- data[-zr, ]
+    if (!length(zc) && !length(zr)) break
+  }
+  pca <- prcomp_irlba(t(data), n = pcs, retx = TRUE, center = TRUE, scale. = TRUE)
+  loadings <- abs(pca$rotation); rownames(loadings) <- rownames(data)
+  prop_var <- pca$sdev^2 / sum(pca$sdev^2)
+  percent_cont <- sweep(loadings, 2, colSums(loadings), "/")
+  tot_contr <- rowSums(sweep(percent_cont, 2, prop_var, "*"))
+  if (any(!is.finite(tot_contr))) stop("Contribution calculation produced NA/Inf values.")
+  list(top_genes = sort(tot_contr, decreasing = TRUE), count_matrix = data)
+}
+```
+
+
+#PBMC-Dataset
+```{r plot-varpcs-pbmc}
+library(here); library(ggplot2); library(skmeans); library(irlba)
+source(paste0(here(), "/clSensitivity.R"))
+
+
+count_matrix <- read.csv(paste0(here(), "/Filtered_Input/PBMCs10xfromSC1.csv"), row.names = 1)
+rownames(count_matrix) <- gsub("-", "_", rownames(count_matrix))
+colnames(count_matrix) <- gsub("\\.", "-", colnames(count_matrix))
+
+truth <- read.csv(paste0(here(), "/Filtered_Input/PBMCsFromSC1_ClusterLabels.csv"))
+truth$cell <- gsub("\\.", "-", truth$cell)
+filters <- c("riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter")
+
+base <- principalgenes(count_matrix, pcs = 2, filters = filters)
+truth <- truth[match(colnames(base$count_matrix), truth$cell), ]
+true_labels_vector <- setNames(as.numeric(factor(truth$label, levels = unique(truth$label))), truth$cell)
+k_cls <- max(true_labels_vector)
+
+n_pcs <- 2:40
+acc <- numeric(length(n_pcs))
+
+for (i in seq_along(n_pcs)) {
+  set.seed(12345)
+  pg <- principalgenes(count_matrix, pcs = n_pcs[i], filters = filters)
+  submat <- pg$count_matrix[names(pg$top_genes)[1:1000], ]
+  clusters <- skmeans(t(log2(submat + 1)), k = k_cls, control = list(verbose = FALSE))$cluster
+  acc[i] <- as.numeric(clustSensitivity(clusters, true_labels_vector, as.character(1:k_cls))[1, 2])
+  message("PCs = ", n_pcs[i], " -> accuracy = ", round(acc[i], 3))
+}
+
+df <- data.frame(n_pcs = n_pcs, accuracy = acc)
+ggplot(df, aes(n_pcs, accuracy)) +
+  geom_point(colour = "orange", size = 2) +
+  geom_smooth(method = "loess", colour = "blue") +
+  ylim(0.5, 1) +
+  labs(x = NULL, y = NULL, title = NULL)
+ggsave(paste0(here(), "/Properties_and_Performance/PBMC_accuracy_vs_nPCs.jpg"), dpi = 300)
+```
+
+#Azimuth-Dataset
+```{r plot-varpcs-azimuth}
+count_matrix <- read.csv(paste0(here(), "/Filtered_Input/Azimuth_filtereddatQC_basicQC_LibraryIDs.csv"), row.names = 1)
+rownames(count_matrix) <- gsub("-", "_", rownames(count_matrix))
+colnames(count_matrix) <- gsub("\\.", "-", colnames(count_matrix))
+
+truth <- read.csv(paste0(here(), "/Filtered_Input/Azimuth_ClusterLabels.csv"))
+truth$cell <- gsub("\\.", "-", truth$cell)
+filters <- c("riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter")
+
+base <- principalgenes(count_matrix, pcs = 2, filters = filters)
+truth <- truth[match(colnames(base$count_matrix), truth$cell), ]
+true_labels_vector <- setNames(as.numeric(factor(truth$label, levels = unique(truth$label))), truth$cell)
+k_cls <- max(true_labels_vector)
+
+n_pcs <- 2:40
+acc <- numeric(length(n_pcs))
+
+for (i in seq_along(n_pcs)) {
+  set.seed(12345)
+  pg <- principalgenes(count_matrix, pcs = n_pcs[i], filters = filters)
+  submat <- pg$count_matrix[names(pg$top_genes)[1:1000], ]
+  clusters <- skmeans(t(log2(submat + 1)), k = k_cls, control = list(verbose = FALSE))$cluster
+  acc[i] <- as.numeric(clustSensitivity(clusters, true_labels_vector, as.character(1:k_cls))[1, 2])
+  message("PCs = ", n_pcs[i], " -> accuracy = ", round(acc[i], 3))
+}
+
+df <- data.frame(n_pcs = n_pcs, accuracy = acc)
+ggplot(df, aes(n_pcs, accuracy)) +
+  geom_point(colour = "orange", size = 2) +
+  geom_smooth(method = "loess", colour = "blue") +
+  ylim(0.5, 1) +
+  labs(x = NULL, y = NULL, title = NULL)
+ggsave(paste0(here(), "/Properties_and_Performance/Azimuth_accuracy_vs_nPCs.jpg"), dpi = 300)

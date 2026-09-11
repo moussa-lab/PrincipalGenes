@@ -1,0 +1,286 @@
+---
+title: "Principal_Genes_Timing"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  dpi = 300,
+  fig.width = 5,   # 1500 pixels / 300 dpi
+  fig.height = 4   # 1200 pixels / 300 dpi
+)
+```
+
+#Install R packages
+```{r install-packages}
+pkgs <- c("here", "ggplot2", "dplyr", "Seurat", "skmeans", "mclust", "tidyr", "ggrepel", "stringr", "igraph")
+to_install <- setdiff(pkgs, rownames(installed.packages()))
+if (length(to_install)) {
+  install.packages(to_install)
+}
+```
+
+#OPTIMAL PC SELECTION ALGO
+```{r quick-elbow}
+quick.elbow <- function(varpc,low=.08,max.pc=.9) {
+  ee <- varpc/sum(varpc) #proportinal eigenvalues
+  while(low>=max(ee)) { low <- low/2 } #when no principal component eigenvalues are large enough, cut low in half
+  lowie <- (ee<low) ; highie <- ee>low/8
+  low.ones <- which(lowie & highie)
+  others <- length(which(!lowie))
+  if(length(low.ones)>0) {
+    if(length(low.ones)==1) {
+      elbow <- low.ones
+    } else {
+      set <- ee[low.ones]
+      pc.drops <- abs(diff(set))/(set[1:(length(set)-1)])
+      infz <- is.infinite(pc.drops)
+      #print(pc.drops)
+      elbow <- which(pc.drops==max(pc.drops[!infz],na.rm=T))[1]+others
+    }
+  } else {
+    # if somehow there are no small eigenvalues, just choose the elbow as the second last
+    cat("no eigenvalues were significantly smaller than the previous\n")
+    elbow <- length(ee)
+  }
+  if(tail(cumsum(ee[1:elbow]),1)>max.pc) {
+    elbow <- which(cumsum(ee)>max.pc)[1]-1
+  }
+  if(elbow<1) {
+    warning("elbow calculation failed, return zero")
+    return(0)
+  }
+  elbow<-elbow + 1 # include last to be sure ..
+  names(elbow) <- NULL
+  return(elbow)
+}
+```
+
+#PRINCIPAL GENES ALGO
+```{r main-algo}
+principalgenes<- function(data = NULL, pcs = -1, cut = -1, filters=c("IgFilter", "TrFilter", "riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter")) {
+
+  message(length(rownames(data)), ", ", length(colnames(data)))
+  message(paste0(filters))
+  if (is.null(data)) {
+    stop("Error: 'data' must be provided.")
+  }
+
+  if(cut == -1){
+    cut = 0.25
+  }
+  
+  zero_cols<-which(colSums(data) == 0)
+  zero_var_rows <- apply(data, 1, var, na.rm = TRUE) == 0
+  zero_var_rows<-which(zero_var_rows)
+
+  message("Remove zero rows and remove zero columns until none are left")
+  while(length(zero_cols) != 0 || length(zero_var_rows)!=0){
+    zero_cols<-which(colSums(data) == 0)
+    if(length(zero_cols) > 0) {
+      data<-data[, -zero_cols]
+    }
+    zero_var_rows <- apply(data, 1, var, na.rm = TRUE) == 0
+    zero_var_rows<-which(zero_var_rows)
+    if(length(zero_var_rows) > 0) {
+      data<-data[-zero_var_rows, ]
+    }
+    message("Dataset Dimensions after removing zero rows and columns: Rows: ", length(rownames(data)), ", Columns: ", length(colnames(data)))
+  }
+  
+  message("Calculating optimal number of PCs via elbow method:")
+  if(pcs == -1 || pcs >= 20 || pcs >= 0.05*ncol(data)){
+    temp<- irlba::prcomp_irlba(t(data), n = min(20, 0.05*ncol(data)), retx = TRUE, center = TRUE, scale. = TRUE)
+    eig = temp$sdev^2
+    pcs = quick.elbow(eig)
+    rm(eig, temp)
+  }
+
+  message("Values set: pcs = ", pcs, ", chosen cutoff = ", cut)
+
+  #transpose the data to have genes as columns and cells as rows
+  rotated_output <- irlba::prcomp_irlba(t(data), n = pcs, retx = TRUE, center = TRUE, scale. = TRUE)
+
+  #prepare to represent results
+  summary<- summary(rotated_output)
+  loadings <- rotated_output$rotation
+  rownames(loadings) <- rownames(data) # Associate gene names with loadings
+
+  #compute variance explained by each PC
+  eigenvalues <- (rotated_output$sdev)^2
+  prop_var <- eigenvalues / sum(eigenvalues)
+  temp_obj <- data.frame(x=colnames(loadings), y = prop_var)
+
+  #plot PCA results
+  graph1<- ggplot2::ggplot(temp_obj, ggplot2::aes(x = x, y = y * 100)) +
+    ggplot2::geom_bar(stat = "identity", fill = "skyblue") +
+    ggplot2::geom_text(ggplot2::aes(label= round(y*100, 2)), vjust = +1.5)+
+    ggplot2::labs(x = NULL, y = NULL, title = NULL) +
+    ggplot2::theme_minimal() + ggplot2::theme(legend.position = "none")
+  plot(graph1)
+
+  #calculate absolute values of loadings and contribution percentages
+  loadings <- abs(loadings)
+  sumload <- colSums(loadings)
+  percent_cont <- loadings / sumload
+
+  #calculate total contribution to variance for each gene
+  scaled_contr<-sweep(percent_cont, 2, prop_var, FUN = "*")
+  tot_contr <- rowSums(scaled_contr)
+  
+  #select genes with total contribution in cut percentile
+  message("starting the cutoff process")
+  cumulative_gps<- 0
+  if (cut == 1){
+    result<- sort(decreasing = TRUE, tot_contr)
+  } else {
+
+    for (i in 1:length(tot_contr)){
+      result<-list()
+      if (is.na(tot_contr[i]) || is.infinite(tot_contr[i])){
+        stop("Error: contribution calculation produced NA or infinite values. Please check the input data.")
+      }
+
+      result[[i]] <- as.numeric(tot_contr[i])
+      cumulative_gps <- cumulative_gps + as.numeric(tot_contr[i])
+      if (cumulative_gps >= cut){
+        break
+      }
+    }
+    result<-unlist(result)
+  }
+
+  # Log transformation for top genes' contributions
+  logcont <- -10 * log10(result)
+
+  # Return results
+  list(
+    summary,
+    log_contributions = logcont, #-10*log10(gps), larger values imply less contribution
+    top_genes = result, #ordered top selected genes
+    rotated_output = rotated_output, #pca output
+    count_matrix = data #filtered count matrix for use elsewhere
+  )
+
+}
+```
+
+#Global Library
+```{r here-library}
+library(here); library(ggplot2); library(irlba)
+```
+
+#PBMC DATASET
+##Read in the dataset
+```{r read-data}
+
+input_file<-paste0(here(), "/Filtered_Input/PBMCs10xfromSC1.csv")
+truth_file<-paste0(here(), "/Filtered_Input/PBMCsFromSC1_ClusterLabels.csv")
+name<-"PBMC"
+data<-read.csv(input_file, row.names = 1, check.names=FALSE)
+```
+
+#TIMING BENCHMARK HELPERS
+```{r benchmark-helpers}
+compute_gps <- function(data, pcs) {
+  rotated <- irlba::prcomp_irlba(t(data), n = pcs, retx = TRUE,
+                                 center = TRUE, scale. = TRUE)
+  loadings <- abs(rotated$rotation)
+  rownames(loadings) <- rownames(data)
+
+  eigenvalues <- rotated$sdev^2
+  prop_var <- eigenvalues / sum(eigenvalues)
+
+  percent_cont <- sweep(loadings, 2, colSums(loadings), FUN = "/")
+  scaled_contr <- sweep(percent_cont, 2, prop_var, FUN = "*")
+  rowSums(scaled_contr)
+}
+
+gps_cutoff <- function(tot_contr, cut) {
+  sorted_contr <- sort(tot_contr, decreasing = TRUE)
+  if (cut == 1) return(sorted_contr)
+
+  result <- list()
+  cumulative_gps <- 0
+  for (i in seq_along(sorted_contr)) {
+    if (is.na(sorted_contr[i]) || is.infinite(sorted_contr[i])) {
+      stop("Error: contribution calculation produced NA or infinite values.")
+    }
+    result[[i]] <- as.numeric(sorted_contr[i])
+    cumulative_gps <- cumulative_gps + as.numeric(sorted_contr[i])
+    if (cumulative_gps >= cut) break
+  }
+  unlist(result)
+}
+```
+
+#GRAPH 1: IRLBA VS FULL SVD TIMING BY PC COUNT
+```{r irlba-vs-svd-timing}
+
+pc_counts <- c(5, 10, 15, 20)
+
+timing_results <- do.call(rbind, lapply(pc_counts, function(np) {
+  irlba_t <- system.time(
+    irlba::prcomp_irlba(t(data), n = np, retx = TRUE,
+                        center = TRUE, scale. = TRUE)
+  )["elapsed"]
+
+  svd_t <- system.time({
+    X <- scale(t(data), center = TRUE, scale = TRUE)
+    sv <- svd(X, nu = np, nv = np)
+    pc_scores <- sv$u %*% diag(sv$d[1:np])
+    loadings  <- sv$v
+  })["elapsed"]
+
+  data.frame(pcs = np, irlba_time = irlba_t, svd_time = svd_t)
+}))
+
+timing_long <- tidyr::pivot_longer(timing_results,
+                                   cols = c(irlba_time, svd_time),
+                                   names_to = "Method",
+                                   values_to = "Time")
+
+ggplot2::ggplot(timing_long,
+                ggplot2::aes(x = factor(pcs), y = Time, fill = Method)) +
+  ggplot2::geom_col(position = ggplot2::position_dodge(width = 0.9)) +
+  ggplot2::labs(x = NULL, y = NULL, title = NULL) +
+  ggplot2::theme_minimal() + ggplot2::theme(legend.position = "none")
+ggsave(filename = paste0(here(), "/Properties_and_Performance/PBMC_SVD_vs_IRLBA_timing.jpg"),, 
+   dpi = 300)
+```
+
+#GRAPH 2: TIME PERFORMANCE OF GPS CUTOFF CALCULATION
+```{r gps-cutoff-timing}
+tot_contr <- compute_gps(data, pcs = 5)
+
+cutoffs <- seq(0.10, 1.00, by = 0.05)
+
+cutoff_bench <- do.call(rbind, lapply(cutoffs, function(ct) {
+  reps <- 10
+  times_ms <- replicate(reps, {
+    t0 <- Sys.time()
+    res <- gps_cutoff(tot_contr, ct)
+    as.numeric(difftime(Sys.time(), t0, units = "secs")) * 1000
+  })
+  n_genes <- length(gps_cutoff(tot_contr, ct))
+  data.frame(cut_pct = ct * 100,
+             time_ms = median(times_ms),
+             n_genes = n_genes)
+}))
+
+ggplot2::ggplot(cutoff_bench, ggplot2::aes(x = cut_pct, y = time_ms)) +
+  ggplot2::geom_smooth(method = "loess", se = TRUE,
+                       color = "blue", fill = "grey70", alpha = 0.5) +
+  ggplot2::geom_point(color = "orange", size = 2) +
+  ggplot2::geom_text(ggplot2::aes(label = n_genes),
+                     vjust = -1.2, size = 3, color = "grey30") +
+  ggplot2::scale_x_continuous(breaks = seq(10, 100, by = 5)) +
+  ggplot2::labs(x = NULL, y = NULL, title = NULL) +
+  ggplot2::theme_minimal() + ggplot2::theme(legend.position = "none")
+ggsave(filename = paste0(here(), "/Properties_and_Performance/PBMC_GPS_timing.jpg"),, 
+   dpi = 300)
+```

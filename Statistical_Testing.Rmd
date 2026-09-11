@@ -1,0 +1,280 @@
+---
+title: "Statistical_Tests"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  dpi = 300,
+  fig.width = 5,   # 1500 pixels / 300 dpi
+  fig.height = 4   # 1200 pixels / 300 dpi
+)
+```
+
+#Install R packages
+```{r}
+pkgs <- c("here", "ggplot2", "dplyr", "Seurat", "skmeans", "mclust", "tidyr", "ggrepel", "stringr", "igraph")
+to_install <- setdiff(pkgs, rownames(installed.packages()))
+if (length(to_install)) {
+  install.packages(to_install)
+}
+```
+
+#import data
+```{r import-data}
+library(here)
+library(dplyr)
+library(tidyr)
+azimuth<-read.csv(paste0(here(), "/Main_Data_Hold/Azimuth_PPS_HVG_Variance_Mean_Top100.csv"), row.names = 1, check.names = FALSE)
+pbmc<-read.csv(paste0(here(), "/Main_Data_Hold/PBMC_PPS_HVG_Variance_Mean_Top100.csv"), row.names = 1, check.names = FALSE)
+pollen<-read.csv(paste0(here(), "/Main_Data_Hold/Pollen_PPS_HVG_Variance_Mean_Top100.csv"), row.names = 1, check.names = FALSE)
+subsetbraindata<-read.csv(paste0(here(), "/Main_Data_Hold/Human_Primary_Motor_Cortex_PPS_HVG_Variance_Mean_Top100.csv"), row.names = 1, check.names = FALSE)
+tabulamurisliver<-read.csv(paste0(here(), "/Main_Data_Hold/TabulaMuris_Liver_PPS_HVG_Variance_Mean_Top100.csv"), row.names = 1, check.names = FALSE)
+tabulamurislung<-read.csv(paste0(here(), "/Main_Data_Hold/TabulaMuris_Lung_PPS_HVG_Variance_Mean_Top100.csv"), row.names = 1, check.names = FALSE)
+```
+
+#Convert PPS score to rank
+```{r pps-rank}
+azimuth$PPS_score_percent <- 1:100
+names(azimuth)[names(azimuth) == "PPS_score_percent"] <- "PPS_rank"
+
+pbmc$PPS_score_percent <- 1:100
+names(pbmc)[names(pbmc) == "PPS_score_percent"] <- "PPS_rank"
+
+pollen$PPS_score_percent <- 1:100
+names(pollen)[names(pollen) == "PPS_score_percent"] <- "PPS_rank"
+
+subsetbraindata$PPS_score_percent <- 1:100
+names(subsetbraindata)[names(subsetbraindata) == "PPS_score_percent"] <- "PPS_rank"
+
+tabulamurisliver$PPS_score_percent <- 1:100
+names(tabulamurisliver)[names(tabulamurisliver) == "PPS_score_percent"] <- "PPS_rank"
+
+tabulamurislung$PPS_score_percent <- 1:100
+names(tabulamurislung)[names(tabulamurislung) == "PPS_score_percent"] <- "PPS_rank"
+```
+
+#kendall correlation analysis
+```{r}
+name_map <- c(
+  azimuth           = "Azimuth_MMC",
+  pbmc              = "PBMC",
+  pollen            = "Pollen.",
+  subsetbraindata   = "Human_Primary_Motor_Cortex",
+  tabulamurisliver  = "Tabula Muris Liver",
+  tabulamurislung   = "Tabula Muris Lung"
+)
+
+datasets <- names(name_map)
+
+results_list <- lapply(datasets, function(nm) {
+  obj <- get(nm)
+  
+  test <- cor.test(obj$PPS_rank, obj$HVG_rank, method = "kendall")
+  
+  data.frame(
+    dataset_name = name_map[[nm]],
+    tau = unname(test$estimate),
+    pvalue = test$p.value
+  )
+})
+
+kendall_results <- do.call(rbind, results_list)
+kendall_results
+
+write.csv(kendall_results, paste0(here(), "/Statistical_Tests/Kendall_Correlation.csv"))
+```
+
+#read in counts and perform HVG
+```{r read-in-counts}
+library(Seurat)
+
+#AZIMUTH
+azimuth_count <- read.csv(paste0(here(), "/Filtered_Input/Azimuth_filtereddatQC_basicQC_LibraryIDs.csv"), row.names = 1)
+rownames(azimuth_count) <- gsub("-", "_", rownames(azimuth_count))
+colnames(azimuth_count) <- gsub("\\.", "-", colnames(azimuth_count))
+
+seuratObject<- CreateSeuratObject(counts = as.matrix(azimuth_count))
+Idents(seuratObject) <- "All_Cells"
+norm_seuratObject <- NormalizeData(seuratObject)
+seuratObject<- FindVariableFeatures(norm_seuratObject, selection.method = "dispersion", nfeatures = length(row.names(azimuth_count)))
+HVGs <- VariableFeatures(seuratObject)
+HVGs<-gsub("-", "_", HVGs)
+azimuth_hvgs<-HVGs[1:100]
+
+#PBMC
+pbmc_count <- read.csv(paste0(here(), "/Filtered_Input/PBMCs10xfromSC1.csv"), row.names = 1)
+rownames(pbmc_count) <- gsub("-", "_", rownames(pbmc_count))
+colnames(pbmc_count) <- gsub("\\.", "-", colnames(pbmc_count))
+
+seuratObject<- CreateSeuratObject(counts = as.matrix(pbmc_count))
+norm_seuratObject <- NormalizeData(seuratObject)
+seuratObject<- FindVariableFeatures(norm_seuratObject, selection.method = "dispersion", nfeatures = length(row.names(pbmc_count)))
+HVGs <- VariableFeatures(seuratObject)
+HVGs<-gsub("-", "_", HVGs)
+pbmc_hvgs<-HVGs[1:100]
+
+#POLLEN
+pollen_count <- read.csv(paste0(here(), "/Filtered_Input/Pollen_TPM_Matrix.csv"), row.names = 1)
+rownames(pollen_count) <- gsub("-", "_", rownames(pollen_count))
+colnames(pollen_count) <- gsub("\\.", "-", colnames(pollen_count))
+
+pollen_seuratObject <- CreateSeuratObject(counts = as.matrix(pollen_count))
+norm_pollen_seuratObject <- NormalizeData(pollen_seuratObject)
+pollen_seuratObject <- FindVariableFeatures(norm_pollen_seuratObject, selection.method = "dispersion", nfeatures = length(row.names(pollen_count)))
+pollen_HVGs <- VariableFeatures(pollen_seuratObject)
+pollen_HVGs <- gsub("-", "_", pollen_HVGs)
+pollen_hvgs <- pollen_HVGs[1:100]
+
+#BRAIN
+brain_count <- read.csv(paste0(here(), "/Filtered_Input/Human_Primary_Motor_Cortex.csv"), row.names = 1)
+rownames(brain_count) <- gsub("-", "_", rownames(brain_count))
+colnames(brain_count) <- gsub("\\.", "-", colnames(brain_count))
+
+brain_seuratObject <- CreateSeuratObject(counts = as.matrix(brain_count))
+norm_brain_seuratObject <- NormalizeData(brain_seuratObject)
+brain_seuratObject <- FindVariableFeatures(norm_brain_seuratObject, selection.method = "dispersion", nfeatures = length(row.names(brain_count)))
+brain_HVGs <- VariableFeatures(brain_seuratObject)
+brain_HVGs <- gsub("-", "_", brain_HVGs)
+brain_hvgs <- brain_HVGs[1:100]
+
+#LIVER 
+liver_count <- read.csv(paste0(here(), "/Filtered_Input/TabulaMuris_Liver_Counts.csv"), row.names = 1)
+rownames(liver_count) <- gsub("-", "_", rownames(liver_count))
+colnames(liver_count) <- gsub("\\.", "-", colnames(liver_count))
+
+liver_seuratObject <- CreateSeuratObject(counts = as.matrix(liver_count))
+norm_liver_seuratObject <- NormalizeData(liver_seuratObject)
+liver_seuratObject <- FindVariableFeatures(norm_liver_seuratObject, selection.method = "dispersion", nfeatures = length(row.names(liver_count)))
+liver_HVGs <- VariableFeatures(liver_seuratObject)
+liver_HVGs <- gsub("-", "_", liver_HVGs)
+liver_hvgs <- liver_HVGs[1:100]
+
+#LUNG
+lung_count <- read.csv(paste0(here(), "/Filtered_Input/TabulaMuris_Lung_Counts.csv"), row.names = 1)
+rownames(lung_count) <- gsub("-", "_", rownames(lung_count))
+colnames(lung_count) <- gsub("\\.", "-", colnames(lung_count))
+
+lung_seuratObject <- CreateSeuratObject(counts = as.matrix(lung_count))
+norm_lung_seuratObject <- NormalizeData(lung_seuratObject)
+lung_seuratObject <- FindVariableFeatures(norm_lung_seuratObject, selection.method = "dispersion", nfeatures = length(row.names(lung_count)))
+lung_HVGs <- VariableFeatures(lung_seuratObject)
+lung_HVGs <- gsub("-", "_", lung_HVGs)
+lung_hvgs <- lung_HVGs[1:100]
+```
+
+#expression and variance boxplots
+```{r expression-boxplots}
+library(ggplot2)
+
+#compute mean expression & variance for a gene set in a given count matrix
+get_gene_stats <- function(genes, count_matrix) {
+  count_matrix<-log2(count_matrix + 1)
+  genes <- gsub("-", "_", genes)              # match naming convention used on count matrices
+  genes <- intersect(genes, rownames(count_matrix))
+  mat <- count_matrix[genes, , drop = FALSE]
+  data.frame(
+    gene = genes,
+    mean_expression = rowMeans(mat),
+    variance = apply(mat, 1, var)
+  )
+}
+
+# Principal Genes (top 100 PPS-ranked genes)
+azimuth_pg <- get_gene_stats(rownames(azimuth), azimuth_count)
+azimuth_pg$dataset <- "Azimuth_MMC"
+
+pbmc_pg <- get_gene_stats(rownames(pbmc), pbmc_count)
+pbmc_pg$dataset <- "PBMC"
+
+pollen_pg <- get_gene_stats(rownames(pollen), pollen_count)
+pollen_pg$dataset <- "Pollen"
+
+brain_pg <- get_gene_stats(rownames(subsetbraindata), brain_count)
+brain_pg$dataset <- "Human Primary Motor Cortex"
+
+liver_pg <- get_gene_stats(rownames(tabulamurisliver), liver_count)
+liver_pg$dataset <- "Tabula Muris Liver"
+
+lung_pg <- get_gene_stats(rownames(tabulamurislung), lung_count)
+lung_pg$dataset <- "Tabula Muris Lung"
+
+principal_genes_df <- do.call(rbind, list(azimuth_pg, pbmc_pg, pollen_pg, brain_pg, liver_pg, lung_pg))
+principal_genes_df$Category <- "Principal Genes"
+
+#HVGs (top 100 by dispersion)
+azimuth_hvg <- get_gene_stats(azimuth_hvgs, azimuth_count)
+azimuth_hvg$dataset <- "Azimuth_MMC"
+
+pbmc_hvg <- get_gene_stats(pbmc_hvgs, pbmc_count)
+pbmc_hvg$dataset <- "PBMC"
+
+pollen_hvg <- get_gene_stats(pollen_hvgs, pollen_count)
+pollen_hvg$dataset <- "Pollen"
+
+brain_hvg <- get_gene_stats(brain_hvgs, brain_count)
+brain_hvg$dataset <- "Human Primary Motor Cortex"
+
+liver_hvg <- get_gene_stats(liver_hvgs, liver_count)
+liver_hvg$dataset <- "Tabula Muris Liver"
+
+lung_hvg <- get_gene_stats(lung_hvgs, lung_count)
+lung_hvg$dataset <- "Tabula Muris Lung"
+
+hvg_genes_df <- do.call(rbind, list(azimuth_hvg, pbmc_hvg, pollen_hvg, brain_hvg, liver_hvg, lung_hvg))
+hvg_genes_df$Category <- "HVGs"
+
+#Combine & plot
+expression_boxplot_df <- rbind(principal_genes_df, hvg_genes_df)
+expression_boxplot_df$Category <- factor(expression_boxplot_df$Category,
+                                          levels = c("Principal Genes", "HVGs"))
+
+gene_set_cols <- c("Principal Genes" = "#1BB7D8",
+                   "HVGs"            = "#E55B1E")
+
+ggplot(expression_boxplot_df, aes(x = Category, y = mean_expression, fill = Category)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.15, alpha = 0.5, size = 1.5) +
+  facet_wrap(~ dataset, scales = "free_y") +
+  labs(x = NULL, y = NULL, title = NULL) +
+  scale_fill_manual(values = gene_set_cols) +
+  theme_minimal() + theme(legend.position = "none")
+ggsave(filename = paste0(here(), "/Statistical_Tests/Log2v2Mean_Expression_HVG_vs_PG_boxplot_bydataset.jpg"),
+       dpi = 300, width = 10, height = 7)
+
+ggplot(expression_boxplot_df, aes(x = Category, y = variance, fill = Category)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.15, alpha = 0.5, size = 1.5) +
+  facet_wrap(~ dataset, scales = "free_y") +
+  labs(x = NULL, y = NULL, title = NULL) +
+  scale_fill_manual(values = gene_set_cols) +
+  theme_minimal() + theme(legend.position = "none")
+ggsave(filename = paste0(here(), "/Statistical_Tests/Log2v2Variance_HVG_vs_PG_boxplot_bydataset.jpg"),
+       dpi = 300, width = 10, height = 7)
+
+expression_boxplot_df$gene<-NULL
+write.csv(expression_boxplot_df, paste0(here(), "/Statistical_Tests/log2_mean_expression_variance_all_datasets.csv"))
+```
+
+#genes dataframes
+```{r variance boxplots}
+gene_dataframes<-data.frame(azimuth_PG=rownames(azimuth),
+                            azimuth_HVG=azimuth_hvgs,
+                            pbmc_PG=rownames(pbmc),
+                            pbmc_HVG=pbmc_hvgs,
+                            pollen_PG=rownames(pollen),
+                            pollen_HVG=pollen_hvgs,
+                            braindata_PG=rownames(subsetbraindata),
+                            braindata_HVG=brain_hvgs,
+                            liver_PG=rownames(tabulamurisliver),
+                            liver_HVG=liver_hvgs,
+                            lung_PG=rownames(tabulamurislung),
+                            lung_HVG=lung_hvgs)
+
+write.csv(gene_dataframes, paste0(here(), "/Statistical_Tests/top100genes_all_datasets.csv"))
+```
+
