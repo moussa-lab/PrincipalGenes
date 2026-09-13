@@ -42,7 +42,7 @@ tar -zxvf Filtered_Input.tar.gz .
 All code was written and tested in R version 4.5.2, it takes several hours of runtime to generate all figures and tables so it's recommended to run everything as background processes. Intensive memory and CPU utilization is expected since all code was written and tested on a virtual machine with 170 GB of memory and 32 CPU cores.
 
 ### Execution Order
-- Run all Sensitivity_ARI.Rmd files first, then Statistical_Testing.Rmd, then Boostrapping.Rmd files, then Distortion_Free_PCA, and finally Vst_TabulaMuris_Liver.Rmd.
+- Run all Sensitivity_ARI.Rmd files first, then Statistical_Testing.Rmd, then Boostrapping.Rmd files, then Distortion_Free_PCA.Rmd, and finally Vst_TabulaMuris_Liver.Rmd.
 - Data_Hold directories will contain several intermediary tables that can be used for downstream analysis and exploration.
 - Figures are primarily stored in the results directories.
 - Statistical_Tests will contain composite results for all datasets obtained when running Statistical_testing.Rmd
