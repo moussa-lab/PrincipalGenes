@@ -5,7 +5,7 @@ Repository of Data and Code for the development and evaluation of the Principal 
 - Input count matrices are available [here](https://drive.google.com/drive/folders/1ltFHX5rjB8K2SGMiuhtHgTSbZug4zVzb?usp=sharing)
 - Uncompress input count matrices in `Filtered_Input.tar.gz` using the commands below. Ensure the input data is in the parent directory (PrincipalGenes).
 
-##Directory Structure for code execution
+## Directory Structure for code execution
 Create the following Directories in the parent directory of the github project. This is necessary if you are running the code as an Rscript and not iterating manually through chunks.
 - Distortion_Free_PCA
 - Bootstrapping_Data_Hold
