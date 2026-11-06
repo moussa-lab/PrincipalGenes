@@ -1,0 +1,463 @@
+---
+title: "Louvain_Run"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+date: "2026-10-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Install and load R packages
+```{r install-packages}
+pkgs <- c("here", "ggplot2", "Seurat", "ggrepel", "stringr", "irlba",
+          "fpc", "skmeans", "dplyr", "tidyr")
+to_install <- setdiff(pkgs, rownames(installed.packages()))
+if (length(to_install)) {
+  install.packages(to_install)
+}
+
+for (p in pkgs) library(p, character.only = TRUE)
+```
+
+# Source Principal Genes function
+```{r source-pg}
+source(here("Principal_Genes.R"))
+```
+
+# Constants (edit everything here)
+```{r define-constants}
+#Analysis settings
+FILTERS    <- c("riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter")
+CUT        <- 1
+HVG_METHOD <- "dispersion"
+SEED       <- 12345
+
+#Cumulative GPS score thresholds (%)
+THRESHOLDS <- seq(10, 50, by = 2)
+
+#Louvain clustering settings
+LOUVAIN_RESOLUTION <- 0.8
+KNN_K              <- 20
+
+#Plotting helpers
+TOP_N    <- 100  #top genes compared between PG and HVG
+LABEL_N  <- 20   #genes labeled per category in Dispersion_VS_GPS Scatter plots
+VIOLIN_N <- 8    #genes shown per violin plot
+VIOLIN_NCOL <- 4   #panels per row for violin plots
+
+#Directories
+INPUT_DIR  <- here("Filtered_Input") #where to find count matrices
+OUT_ROOT   <- here("Unsupervised_Results")  #each dataset gets <OUT_ROOT>/<name>/ folder where output is stored
+EXPORT_DIR <- here("Subset_Counts")         #where TOP-N count matrix subsets
+
+#Plot appearance
+FONT_FAMILY     <- "Arial"
+LEGEND_POSITION <- c(1, 1)  #cartesian coordiates. Range from 0 to 1
+PLOT_DPI        <- 300
+PLOT_WIDTH      <- 5 #inches
+PLOT_HEIGHT     <- 4
+VIOLIN_WIDTH    <- 8 #violin plots hold up to 9 panels, so they get more room
+VIOLIN_HEIGHT   <- 7
+
+COL_PG    <- "#1BB7D8"
+COL_HVG   <- "#E55B1E"
+COL_UNION <- "#2C9F45"
+
+#Datasets to run: name (used as output folder and file prefix) = input CSV filename
+#Comment out a line to skip that dataset
+datasets <- c(
+    Human_Intestines           = "Human_Intestines_subset_counts.csv"
+  , Mouse_Heart                = "Mouse_Heart_subset_counts.csv"
+  , PBMC_SC1                   = "PBMCs10xfromSC1.csv"
+  , TabulaMuris_Liver          = "TabulaMuris_Liver_Counts.csv"
+  , Azimuth_MMC                = "Azimuth_filtereddatQC_basicQC_LibraryIDs.csv"
+  , Human_Primary_Motor_Cortex = "Human_Primary_Motor_Cortex.csv"
+  , TabulaMuris_Lung           = "TabulaMuris_Lung_Counts.csv"
+  , Human_CRC                  = "Human_CRC_subset_counts.csv"
+  , PBMC_Antibody              = "PBMC_antibody_gene_counts.csv"
+  , Pollen                     = "Pollen_TPM_Matrix.csv"
+)
+
+#Datasets whose plots show a legend (use character(0) for none)
+LEGEND_DATASETS <- c(
+    "TabulaMuris_Lung"
+    , "TabulaMuris_Liver"
+    , "Human_Primary_Motor_Cortex"
+    , "Human_Intestines"
+    , "PBMC_Antibody"
+)
+```
+
+# Functions
+## Loading and scoring
+```{r define-functions-scoring}
+#Read a count matrix's CSV and standardize gene/cell names
+load_dataset <- function(path) {
+  counts <- read.csv(path, row.names = 1, check.names = FALSE)
+  rownames(counts) <- gsub("-", "_", rownames(counts))
+  colnames(counts) <- gsub("\\.", "-", colnames(counts))
+  counts
+}
+
+#Run Principal Genes
+compute_pg <- function(counts) {
+  set.seed(SEED)
+  principalgenes(counts, cut = CUT, filters = FILTERS)
+}
+
+#Get HVGs
+compute_hvg <- function(counts) {
+  seurat_obj <- CreateSeuratObject(counts = as.matrix(counts))
+  Idents(seurat_obj) <- "All_Cells"
+  norm_obj <- NormalizeData(seurat_obj)
+  hvg_obj  <- FindVariableFeatures(norm_obj, selection.method = HVG_METHOD,
+                                   nfeatures = nrow(counts))
+  hvgs <- gsub("-", "_", VariableFeatures(hvg_obj))  # descending order HVGs
+  positions  <- match(hvgs, rownames(counts))
+  scored_hvg <- hvg_obj[["RNA"]]@meta.data$vf_disp_data_mvp.dispersion[positions]
+  names(scored_hvg) <- hvgs
+  scored_hvg[is.na(scored_hvg)] <- 0
+
+  list(norm_obj   = norm_obj,
+       hvgs       = hvgs,
+       scored_hvg = sort(scored_hvg, decreasing = TRUE))
+}
+
+#Walk down the ranked Principal Genes and record the gene count at which each cumulative score threshold
+select_threshold_genes <- function(top_genes, thresholds) {
+  cum_score <- cumsum(top_genes * 100)
+  idx <- integer(0)
+  t <- 1
+  for (i in seq_along(cum_score)) {
+    if (cum_score[i] >= thresholds[t]) {
+      idx[t] <- i
+      t <- t + 1
+      if (t > length(thresholds)) break
+    }
+  }
+  if (!length(idx)) stop("No cumulative score threshold was reached")
+  if (length(idx) < length(thresholds)) {
+    message("Only ", length(idx), " of ", length(thresholds),
+            " thresholds reached; highest is ", thresholds[length(idx)], "%")
+  }
+
+  list(thresholds = thresholds[seq_along(idx)],
+       num_genes  = idx,
+       gene_sets  = lapply(idx, function(n) names(top_genes)[seq_len(n)]))
+}
+
+#Save the raw counts subset to only top genes
+#<EXPORT_DIR>/<name>_<method>_subset_<TOP_N>.csv
+save_top_subset <- function(counts, genes, name, method) {
+  missing <- setdiff(genes, rownames(counts))
+  if (length(missing)) {
+    warning(name, " ", method, ": ", length(missing),
+            " genes not found in counts and left out: ", paste(missing, collapse = ", "))
+  }
+  genes <- intersect(genes, rownames(counts))
+  write.csv(counts[genes, , drop = FALSE],
+            file.path(EXPORT_DIR, paste0(name, "_", method, "_subset_", TOP_N, ".csv")))
+}
+```
+
+## Clustering and Calinski-Harabasz
+```{r define-functions-clustering}
+
+cluster_and_score <- function(dat, gene_names, resolution = LOUVAIN_RESOLUTION,
+                              k.param = KNN_K, seed = SEED) {
+
+  m <- as.matrix(t(log2(dat[gene_names, , drop = FALSE] + 1)))
+
+  #Drop NA columns and all-zero cells
+  m <- m[, colSums(is.na(m)) == 0, drop = FALSE]
+  m <- m[rowSums(m) != 0, , drop = FALSE]
+  m_norm <- m / sqrt(rowSums(m^2))
+
+  # kNN -> snn graph (rann for reproducibility)
+  k.param <- min(k.param, nrow(m_norm) - 1)
+  graphs <- FindNeighbors(m_norm, k.param = k.param, compute.SNN = TRUE,
+                          nn.method = "rann", verbose = FALSE)
+
+  louv <- FindClusters(graphs$snn, resolution = resolution, algorithm = 1,
+                       random.seed = seed, verbose = FALSE)
+  clusters <- as.integer(louv[[1]])
+  names(clusters) <- rownames(louv)  #keep cell names
+  clusters <- clusters[rownames(m)]
+
+  n_clust <- length(unique(clusters))
+  if (n_clust < 2) {
+    warning("Louvain returned a single cluster; Calinski-Harabasz set to NA")
+    return(list(clusters = clusters, n_clusters = n_clust, calin = NA))
+  }
+
+  list(
+    clusters   = clusters,
+    n_clusters = n_clust,
+    calin      = calinhara(m, clusters)
+  )
+}
+
+#Cluster on each gene set in a list
+cluster_gene_sets <- function(counts, gene_sets, label) {
+  lapply(seq_along(gene_sets), function(i) {
+    res <- cluster_and_score(counts, gene_sets[[i]])
+    message(label, " set ", i, " (", length(gene_sets[[i]]), " genes): ",
+            res$n_clusters, " clusters")
+    res
+  })
+}
+
+#Pull one numeric field out of a list of clustering results
+pluck_num <- function(res, field) sapply(res, function(r) as.numeric(r[[field]]))
+
+#One row per threshold with Calinski-Harabasz and cluster counts
+build_metrics_df <- function(sel, pg, hvg, union, union_sets) {
+  data.frame(
+    thresholds         = sel$thresholds,
+    num_genes          = sel$num_genes,
+    union_num_genes    = lengths(union_sets),
+    PG_calin           = pluck_num(pg,    "calin"),
+    HVG_calin          = pluck_num(hvg,   "calin"),
+    PG_HVG_Union_calin = pluck_num(union, "calin"),
+    PG_nclust          = pluck_num(pg,    "n_clusters"),
+    HVG_nclust         = pluck_num(hvg,   "n_clusters"),
+    Union_nclust       = pluck_num(union, "n_clusters")
+  )
+}
+```
+
+## Gene comparison
+```{r define-functions-categories}
+#Split the top PGs and top HVGs into common/PG-only/HVG-only
+build_gene_categories <- function(top_genes, scored_hvg) {
+  top_pgs  <- names(head(top_genes, TOP_N))
+  top_hvgs <- names(head(scored_hvg, TOP_N))
+  common   <- intersect(top_pgs, top_hvgs)
+  list(common   = common,
+       pg_only  = setdiff(top_pgs, common),
+       hvg_only = setdiff(top_hvgs, common))
+}
+```
+
+## Plotting and saving
+```{r define-functions-plots}
+#Shared plot theme
+base_theme <- function(show_legend = FALSE) {
+  theme_minimal(base_size = 10, base_family = FONT_FAMILY) +
+    theme(
+      legend.position             = if (show_legend) "inside" else "none",
+      legend.position.inside      = LEGEND_POSITION,
+      legend.justification.inside = LEGEND_POSITION,
+      legend.box.margin           = margin(4, 4, 4, 4),
+      legend.title                = element_blank(),
+      legend.background           = element_rect(fill = alpha("white", 0.8), colour = NA)
+    )
+}
+
+#Save a plot as TIFF and JPG
+save_plot <- function(plot, out_dir, name, suffix,
+                      width = PLOT_WIDTH, height = PLOT_HEIGHT) {
+  stem <- file.path(out_dir, paste0(name, "_", suffix))
+
+  ggsave(filename = paste0(stem, ".tif"), plot = plot, dpi = PLOT_DPI,
+         width = width, height = height, units = "in",
+         device = "tiff", compression = "lzw", type = "cairo", bg = "white")
+
+  ggsave(filename = paste0(stem, ".jpg"), plot = plot, dpi = PLOT_DPI,
+         width = width, height = height, units = "in",
+         device = "jpeg", quality = 100, type = "cairo", bg = "white")
+}
+
+# Three series across thresholds. num_col is labeled with num_genes (below,
+# blue) and union_col with union_num_genes (above, green).
+threshold_plot <- function(df, cols, legend_labels, colors, num_col, union_col,
+                           y_lab, show_legend = FALSE) {
+  long <- df %>%
+    pivot_longer(all_of(cols), names_to = "metric", values_to = "value") %>%
+    mutate(metric = factor(metric, levels = cols))
+
+  g <- ggplot(long, aes(x = thresholds, y = value, color = metric)) +
+    geom_point(size = 2) +
+    geom_text(data = filter(long, metric == num_col), aes(label = num_genes),
+              color = COL_PG, vjust = 2, size = 3, family = FONT_FAMILY,
+              check_overlap = TRUE) +
+    geom_text(data = filter(long, metric == union_col), aes(label = union_num_genes),
+              color = "darkgreen", vjust = -2, size = 3, family = FONT_FAMILY,
+              check_overlap = TRUE) +
+    labs(x = "Cumulative Score Threshold (%)", y = y_lab) +
+    scale_color_manual(breaks = cols,
+                       values = setNames(colors, cols),
+                       labels = setNames(legend_labels, cols)) +
+    base_theme(show_legend)
+
+  # skip the trend line when too few thresholds were reached
+  if (nrow(df) >= 4) {
+    g <- g + geom_smooth(method = "loess", formula = y ~ x,
+                         method.args = list(span = 1, degree = 1, surface = "direct"),
+                         se = FALSE)
+  }
+  g
+}
+
+# Scatter with the top LABEL_N genes of each category highlighted and labeled
+make_category_scatter <- function(df, x, y, x_lab, y_lab, cats,
+                                  show_legend = FALSE, identity_line = FALSE) {
+  df <- df %>%
+    mutate(category = case_when(
+      gene %in% head(cats$pg_only,  LABEL_N) ~ "PG only",
+      gene %in% head(cats$hvg_only, LABEL_N) ~ "HVG only",
+      gene %in% head(cats$common,   LABEL_N) ~ "Both PG & HVG",
+      TRUE                                   ~ NA_character_
+    )) %>%
+    filter(is.finite(.data[[x]]), is.finite(.data[[y]]))
+
+  highlight_df <- filter(df, !is.na(category))
+  other_df     <- filter(df,  is.na(category))
+
+  g <- ggplot() +
+    geom_point(data = other_df, aes(x = .data[[x]], y = .data[[y]]),
+               color = "grey70", alpha = 0.4, size = 1.6) +
+    geom_point(data = highlight_df,
+               aes(x = .data[[x]], y = .data[[y]], color = category),
+               alpha = 0.7, size = 1.8) +
+    ggrepel::geom_text_repel(
+      data = highlight_df,
+      aes(x = .data[[x]], y = .data[[y]], label = gene, color = category),
+      size = 8 / .pt, family = FONT_FAMILY, max.overlaps = Inf, show.legend = FALSE
+    ) +
+    labs(x = x_lab, y = y_lab) +
+    scale_color_manual(
+      breaks = c("PG only", "HVG only", "Both PG & HVG"),
+      values = c("PG only" = COL_PG, "HVG only" = COL_HVG, "Both PG & HVG" = COL_UNION)
+    ) +
+    base_theme(show_legend)
+
+  if (identity_line) {
+    g <- g + geom_abline(slope = 1, intercept = 0, linetype = 2, color = "red")
+  }
+  g
+}
+
+#violin plot of up to VIOLIN_N genes; NULL if there are none
+make_violin_plot <- function(norm_obj, genes) {
+  #Seurat stores features with "-" instead of "_"
+  features <- gsub("_", "-", head(genes, VIOLIN_N))
+  if (!length(features)) return(NULL)
+
+  VlnPlot(norm_obj, features = features) &
+    labs(x = "Identity", y = "Expression Level") &
+    theme(axis.text.x = element_blank(), legend.position = "none")
+}
+```
+
+## Full pipeline for one dataset
+```{r define-functions-pipeline}
+run_dataset <- function(name, path, show_legend = FALSE) {
+  out_dir <- file.path(OUT_ROOT, paste0(name))
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  show_and_save <- function(plot, suffix, ...) {
+    print(plot)
+    save_plot(plot, out_dir, name, suffix, ...)
+  }
+  out_csv <- function(df, suffix) {
+    write.csv(df, file.path(out_dir, paste0(name, "_", suffix, ".csv")), row.names = FALSE)
+  }
+
+  #looad and score
+  counts     <- load_dataset(path)
+  gene_stats <- list(mean = rowMeans(counts, na.rm = TRUE),
+                     var  = apply(counts, 1, var, na.rm = TRUE))
+  pg_results <- compute_pg(counts)
+  hvg        <- compute_hvg(counts)
+
+  #Count matrices subset to each method's top TOP_N genes
+  save_top_subset(counts, names(head(pg_results$top_genes, TOP_N)), name, "PG")
+  save_top_subset(counts, head(hvg$hvgs, TOP_N),                    name, "HVG")
+
+  show_and_save(make_pca_plot(pg_results, name), "PCA_Plot")
+
+  # gene sets at each cumulative score threshold
+  sel        <- select_threshold_genes(pg_results$top_genes, THRESHOLDS)
+  hvg_sets   <- lapply(sel$num_genes, function(n) head(hvg$hvgs, n))
+  union_sets <- Map(union, sel$gene_sets, hvg_sets)
+
+  #louvain clustering on each gene set
+  pg_res    <- cluster_gene_sets(counts, sel$gene_sets, "PG")
+  hvg_res   <- cluster_gene_sets(counts, hvg_sets,      "HVG")
+  union_res <- cluster_gene_sets(counts, union_sets,    "Union")
+
+  #Calinski-Harabasz across thresholds
+  metrics_df <- build_metrics_df(sel, pg_res, hvg_res, union_res, union_sets)
+  calin_cols <- c("PG_calin", "HVG_calin", "PG_HVG_Union_calin")
+  p <- threshold_plot(metrics_df, calin_cols,
+                      c("Principal Genes", "Seurat's HVG", "HVG_PG_Union"),
+                      c(COL_PG, COL_HVG, COL_UNION),
+                      num_col = calin_cols[1], union_col = calin_cols[3],
+                      y_lab = "Calinski-Harabasz Index", show_legend = show_legend)
+  show_and_save(p, "PG_HVG_UNION_CalinskiHarabasz")
+  out_csv(metrics_df, "Calinski_Harabasz_Score")
+
+  #PG vs HVG gene categories (for mean-variance and violin plots)
+  cats <- build_gene_categories(pg_results$top_genes, hvg$scored_hvg)
+
+  mv_df <- data.frame(gene     = rownames(counts),
+                      log_mean = log10(gene_stats$mean + 1),
+                      log_var  = log10(gene_stats$var  + 1))
+  show_and_save(make_category_scatter(mv_df, "log_mean", "log_var",
+                                      "log10(Mean Expression + 1)", "log10(Variance + 1)",
+                                      cats, show_legend, identity_line = TRUE),
+                "PG_HVG_INTERSECT_Log10_mean_variance")
+
+  # Violin plots
+  violin_sets <- list(PG_Only          = cats$pg_only,
+                      HVG_Only         = cats$hvg_only,
+                      PG_HVG_INTERSECT = cats$common)
+  for (v in names(violin_sets)) {
+    p <- make_violin_plot(hvg$norm_obj, violin_sets[[v]])
+    if (is.null(p)) {
+      message("No genes for ", v, " violin plot; skipped")
+    } else {
+      show_and_save(p, paste0(v, "_Violin_Plot"),
+                    width = VIOLIN_WIDTH, height = VIOLIN_HEIGHT)
+    }
+  }
+}
+```
+
+# Run all datasets
+```{r run-all}
+#Check all input files exist before starting
+input_paths <- file.path(INPUT_DIR, datasets)
+missing <- datasets[!file.exists(input_paths)]
+if (length(missing)) {
+  stop("Missing input files in ", INPUT_DIR, ": ", paste(missing, collapse = ", "))
+}
+
+dir.create(OUT_ROOT,   recursive = TRUE, showWarnings = FALSE)
+dir.create(EXPORT_DIR, recursive = TRUE, showWarnings = FALSE)
+
+status      <- character(0)
+all_results <- list()
+
+for (name in names(datasets)) {
+  status[name] <- tryCatch({
+    all_results[[name]] <- run_dataset(name, file.path(INPUT_DIR, datasets[[name]]),
+                                       show_legend = name %in% LEGEND_DATASETS)
+    "success"
+  }, error = function(e) conditionMessage(e))
+}
+
+# Summary
+failed <- status[status != "success"]
+if (length(failed)) {
+  message("Failed datasets:")
+  for (n in names(failed)) message("  ", n, ": ", failed[[n]])
+} else {
+  message("All ", length(status), " datasets completed.")
+}
+```

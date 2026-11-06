@@ -1,0 +1,238 @@
+---
+title: "Dispersion_vs_PPS"
+output: html_document
+date: "2026-10-22"
+---
+
+# Install and load R packages
+```{r install-packages}
+pkgs <- c("here", "ggplot2", "dplyr", "Seurat", "skmeans", "mclust", "tidyr", "ggrepel", "stringr", "igraph", "irlba")
+to_install <- setdiff(pkgs, rownames(installed.packages()))
+if (length(to_install)) {
+  install.packages(to_install)
+}
+
+for (p in pkgs) library(p, character.only = TRUE)
+```
+
+# Source Principal Genes function
+```{r source-pg}
+source(here("Principal_Genes.R"))
+```
+
+# Constants (edit everything here)
+```{r define-constants}
+# Analysis settings
+FILTERS    <- c("riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter")
+CUT        <- 1
+HVG_METHOD <- "dispersion"
+SEED       <- 12345
+
+# Gene set sizes
+TOP_N   <- 100  # top genes compared between PG and HVG
+LABEL_N <- 20   # genes labeled per category in the plot
+
+# Directories
+INPUT_DIR <- here("Filtered_Input")
+OUT_DIR   <- here("Dispersion_PPS_Plots")
+
+# Plot appearance
+FONT_FAMILY     <- "Arial"
+LEGEND_POSITION <- c(0, 0)
+
+# Comment out a line to skip that dataset
+datasets <- c(
+    Human_Intestines           = "Human_Intestines_subset_counts.csv"
+  , Mouse_Heart                = "Mouse_Heart_subset_counts.csv"
+  , PBMC_SC1                   = "PBMCs10xfromSC1.csv"
+  , TabulaMuris_Liver          = "TabulaMuris_Liver_Counts.csv"
+  , Azimuth_MMC                = "Azimuth_filtereddatQC_basicQC_LibraryIDs.csv"
+  , Human_Primary_Motor_Cortex = "Human_Primary_Motor_Cortex.csv"
+  , TabulaMuris_Lung           = "TabulaMuris_Lung_Counts.csv"
+  , Human_CRC                  = "Human_CRC_subset_counts.csv"
+  , PBMC_Antibody              = "PBMC_antibody_gene_counts.csv"
+  , Pollen                     = "Pollen_TPM_Matrix.csv"
+)
+
+# Datasets whose plot shows a legend (use character(0) for none)
+LEGEND_DATASETS <- c(
+    "TabulaMuris_Lung"
+    , "TabulaMuris_Liver"
+    , "Human_Primary_Motor_Cortex"
+    , "Human_Intestines"
+    , "PBMC_Antibody"
+)
+```
+
+# Functions
+```{r define-functions}
+# Read a counts CSV and standardize gene/cell names
+load_dataset <- function(path) {
+  counts <- read.csv(path, row.names = 1, check.names = FALSE)
+  rownames(counts) <- gsub("-", "_", rownames(counts))
+  colnames(counts) <- gsub("\\.", "-", colnames(counts))
+  counts
+}
+
+# Compute Principal Gene scores and HVG dispersion scores
+compute_scores <- function(counts) {
+  set.seed(SEED)
+  pg_results <- principalgenes(counts, cut = CUT, filters = FILTERS)
+  scored_pgs <- pg_results$top_genes
+
+  seurat_obj <- CreateSeuratObject(counts = as.matrix(counts))
+  Idents(seurat_obj) <- "All_Cells"
+  seurat_obj <- NormalizeData(seurat_obj)
+  seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = HVG_METHOD,
+                                     nfeatures = nrow(counts))  # dispersion is log(variance/mean)
+  hvgs <- gsub("-", "_", VariableFeatures(seurat_obj))  # descending order HVGs
+  positions <- match(hvgs, rownames(counts))
+  scored_hvg <- seurat_obj[["RNA"]]@meta.data$vf_disp_data_mvp.dispersion[positions]
+  names(scored_hvg) <- hvgs
+  scored_hvg[is.na(scored_hvg)] <- 0
+  scored_hvg <- sort(scored_hvg, decreasing = TRUE)
+
+  list(scored_pgs = scored_pgs, scored_hvg = scored_hvg)
+}
+
+# Build the plotting data frame with categories assigned
+build_plot_df <- function(scores, all_genes) {
+  top_pgs  <- names(head(scores$scored_pgs, TOP_N))
+  top_hvgs <- names(head(scores$scored_hvg, TOP_N))
+
+  common_genes   <- intersect(top_pgs, top_hvgs)
+  pg_only_genes  <- setdiff(top_pgs, common_genes)
+  hvg_only_genes <- setdiff(top_hvgs, common_genes)
+
+  top_common   <- head(common_genes, LABEL_N)
+  top_pg_only  <- head(pg_only_genes, LABEL_N)
+  top_hvg_only <- head(hvg_only_genes, LABEL_N)
+
+  plot_df <- data.frame(
+    genes      = all_genes,
+    PPS        = unname(scores$scored_pgs[all_genes]),
+    Dispersion = unname(scores$scored_hvg[all_genes]),
+    stringsAsFactors = FALSE
+  )
+  plot_df$PPS[is.na(plot_df$PPS)] <- 0  # genes PG did not score sit at x = 0
+
+  plot_df %>%
+    mutate(category = case_when(
+      genes %in% top_common   ~ "Both PG & HVG",
+      genes %in% top_pg_only  ~ "PG only",
+      genes %in% top_hvg_only ~ "HVG only",
+      TRUE                    ~ NA_character_
+    ))
+}
+
+# Table of top PGs with their rank and score in the full HVG list
+build_top_pg_table <- function(scores) {
+  top_pgs  <- head(scores$scored_pgs, TOP_N)
+  hvg_rank <- match(names(top_pgs), names(scores$scored_hvg))  # NA if absent
+
+  data.frame(
+    gene       = names(top_pgs),
+    PG_rank    = seq_along(top_pgs),
+    PPS        = unname(top_pgs),
+    HVG_rank   = hvg_rank,
+    Dispersion = unname(scores$scored_hvg[hvg_rank]),
+    stringsAsFactors = FALSE
+  )
+}
+
+# Make the PPS vs dispersion plot
+make_plot <- function(plot_df, show_legend = FALSE) {
+  highlight_df <- plot_df %>% filter(!is.na(category))
+  other_df     <- plot_df %>% filter(is.na(category))
+
+  ggplot() +
+    geom_point(
+      data = other_df,
+      aes(x = PPS, y = Dispersion),
+      color = "grey70", alpha = 0.4, size = 1.6
+    ) +
+    geom_point(
+      data = highlight_df,
+      aes(x = PPS, y = Dispersion, color = category),
+      alpha = 0.7, size = 1.8
+    ) +
+    ggrepel::geom_text_repel(
+      data = highlight_df,
+      aes(x = PPS, y = Dispersion, label = genes, color = category),
+      size = 8 / .pt, family = FONT_FAMILY,
+      max.overlaps = Inf, show.legend = FALSE
+    ) +
+    labs(x = "PPS", y = "Dispersion") +
+    scale_color_manual(
+      breaks = c("PG only", "HVG only", "Both PG & HVG"),
+      values = c(
+        "PG only"       = "#1BB7D8",
+        "HVG only"      = "#E55B1E",
+        "Both PG & HVG" = "#2C9F45"
+      )
+    ) +
+    theme_minimal(base_size = 10, base_family = FONT_FAMILY) +
+    theme(
+      legend.position             = if (show_legend) "inside" else "none",
+      legend.position.inside      = LEGEND_POSITION,
+      legend.justification.inside = LEGEND_POSITION,
+      legend.box.margin           = margin(4, 4, 4, 4),
+      legend.title                = element_blank(),
+      legend.background           = element_rect(fill = alpha("white", 0.8), colour = NA)
+    )
+}
+
+# Save plot images and CSVs to OUT_DIR with the dataset name as prefix
+save_outputs <- function(name, plot, plot_df, top_pg_table) {
+  prefix <- file.path(OUT_DIR, name)
+
+  ggsave(filename = paste0(prefix, "_PPS_Dispersion_Comparison.tif"),
+         plot = plot, dpi = 300,
+         width = 5, height = 4, units = "in",  # 1500 x 1200 px at 300 dpi
+         device = "tiff", compression = "lzw", type = "cairo", bg = "white")
+
+  ggsave(filename = paste0(prefix, "_PPS_Dispersion_Comparison.jpg"),
+         plot = plot, dpi = 300,
+         width = 5, height = 4, units = "in",
+         device = "jpeg", quality = 100, type = "cairo", bg = "white")
+
+  write.csv(top_pg_table, paste0(prefix, "_top", TOP_N, "_PGs.csv"), row.names = FALSE)
+  write.csv(plot_df,      paste0(prefix, "_plot_data.csv"),          row.names = FALSE)
+}
+```
+
+# Run all datasets
+```{r run-all}
+# Check all input files exist before starting
+input_paths <- file.path(INPUT_DIR, datasets)
+missing <- datasets[!file.exists(input_paths)]
+if (length(missing)) {
+  stop("Missing input files in ", INPUT_DIR, ": ", paste(missing, collapse = ", "))
+}
+
+dir.create(OUT_DIR, recursive = TRUE, showWarnings = FALSE)
+
+results <- character(0)
+
+for (name in names(datasets)) {
+  results[name] <- tryCatch({
+    counts       <- load_dataset(file.path(INPUT_DIR, datasets[[name]]))
+    scores       <- compute_scores(counts)
+    plot_df      <- build_plot_df(scores, rownames(counts))
+    top_pg_table <- build_top_pg_table(scores)
+    p            <- make_plot(plot_df, show_legend = name %in% LEGEND_DATASETS)
+    print(p)
+    save_outputs(name, p, plot_df, top_pg_table)
+    "success"
+  }, error = function(e) conditionMessage(e))
+}
+
+# Summary
+failed <- results[results != "success"]
+if (length(failed)) {
+  message("Failed datasets:")
+  for (n in names(failed)) message("  ", n, ": ", failed[[n]])
+} else {
+  message("All ", length(results), " datasets completed.")
+}
+```

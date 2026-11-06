@@ -16,7 +16,7 @@ knitr::opts_chunk$set(
 ```
 
 #Install R packages
-```{r}
+```{r install-packages}
 pkgs <- c("here", "ggplot2", "dplyr", "Seurat", "skmeans", "mclust", "tidyr", "ggrepel", "stringr", "igraph")
 to_install <- setdiff(pkgs, rownames(installed.packages()))
 if (length(to_install)) {
@@ -59,12 +59,12 @@ names(tabulamurislung)[names(tabulamurislung) == "PPS_score_percent"] <- "PPS_ra
 ```
 
 #kendall correlation analysis
-```{r}
+```{r kendall-correlation}
 name_map <- c(
-  azimuth           = "Azimuth_MMC",
+  azimuth           = "Azimuth MMC",
   pbmc              = "PBMC",
   pollen            = "Pollen.",
-  subsetbraindata   = "Human_Primary_Motor_Cortex",
+  subsetbraindata   = "Human Primary Motor Cortex",
   tabulamurisliver  = "Tabula Muris Liver",
   tabulamurislung   = "Tabula Muris Lung"
 )
@@ -167,13 +167,36 @@ lung_HVGs <- gsub("-", "_", lung_HVGs)
 lung_hvgs <- lung_HVGs[1:100]
 ```
 
-#expression and variance boxplots
-```{r expression-boxplots}
+#plotting and saving helpers
+```{r plot-helpers}
 library(ggplot2)
 
-#compute mean expression & variance for a gene set in a given count matrix
+boxplot_width  <- 7.5
+boxplot_height <- 5.25
+
+# Save a plot as both TIFF and JPEG
+save_plot_tif_jpg <- function(plot, file_stem, width = 5, height = 4) {
+  ggsave(filename = paste0(file_stem, ".tif"),
+         plot = plot,
+         dpi = 300,
+         width = width, height = height, units = "in",
+         device = "tiff",
+         compression = "lzw",
+         type = "cairo",
+         bg = "white")
+  ggsave(filename = paste0(file_stem, ".jpg"),
+         plot = plot,
+         dpi = 300,
+         width = width, height = height, units = "in",
+         device = "jpeg",
+         quality = 100,
+         type = "cairo",
+         bg = "white")
+}
+
+# Compute log2 mean expression & variance for a gene set in a given count matrix
 get_gene_stats <- function(genes, count_matrix) {
-  count_matrix<-log2(count_matrix + 1)
+  count_matrix <- log2(count_matrix + 1)
   genes <- gsub("-", "_", genes)              # match naming convention used on count matrices
   genes <- intersect(genes, rownames(count_matrix))
   mat <- count_matrix[genes, , drop = FALSE]
@@ -184,9 +207,37 @@ get_gene_stats <- function(genes, count_matrix) {
   )
 }
 
+make_gene_set_boxplot <- function(df, y_var, show_legend = TRUE,
+                                  y_label = c(mean_expression = "Mean log2 expression",
+                                              variance        = "Variance of log2 expression")[[y_var]]) {
+  ggplot(df, aes(x = Category, y = .data[[y_var]], fill = Category)) +
+    geom_boxplot() +
+    geom_jitter(width = 0.15, alpha = 0.5, size = 1.5, show.legend = FALSE) +
+    facet_wrap(~ dataset, scales = "free_y") +
+    labs(
+      x = NULL,
+      y = y_label,
+      fill = NULL
+    ) +
+    scale_fill_manual(
+      breaks = c("Principal Genes", "HVGs"),
+      values = c(
+        "Principal Genes" = "#1BB7D8",
+        "HVGs"            = "#E55B1E"
+      )
+    ) +
+    theme_minimal(base_size = 10, base_family = "Arial") +
+    theme(
+      legend.position = if (show_legend) "right" else "none"
+    )
+}
+```
+
+#expression and variance boxplots
+```{r expression-boxplots, fig.width = 7.5, fig.height = 5.25}
 # Principal Genes (top 100 PPS-ranked genes)
 azimuth_pg <- get_gene_stats(rownames(azimuth), azimuth_count)
-azimuth_pg$dataset <- "Azimuth_MMC"
+azimuth_pg$dataset <- "Azimuth MMC"
 
 pbmc_pg <- get_gene_stats(rownames(pbmc), pbmc_count)
 pbmc_pg$dataset <- "PBMC"
@@ -208,7 +259,7 @@ principal_genes_df$Category <- "Principal Genes"
 
 #HVGs (top 100 by dispersion)
 azimuth_hvg <- get_gene_stats(azimuth_hvgs, azimuth_count)
-azimuth_hvg$dataset <- "Azimuth_MMC"
+azimuth_hvg$dataset <- "Azimuth MMC"
 
 pbmc_hvg <- get_gene_stats(pbmc_hvgs, pbmc_count)
 pbmc_hvg$dataset <- "PBMC"
@@ -233,35 +284,26 @@ expression_boxplot_df <- rbind(principal_genes_df, hvg_genes_df)
 expression_boxplot_df$Category <- factor(expression_boxplot_df$Category,
                                           levels = c("Principal Genes", "HVGs"))
 
-gene_set_cols <- c("Principal Genes" = "#1BB7D8",
-                   "HVGs"            = "#E55B1E")
+#mean expression (no legend)
+mean_expr_plot <- make_gene_set_boxplot(expression_boxplot_df, "mean_expression", show_legend = FALSE)
+mean_expr_plot
+save_plot_tif_jpg(mean_expr_plot,
+                  paste0(here(), "/Statistical_Tests/Log2v2Mean_Expression_HVG_vs_PG_boxplot_bydataset"),
+                  width = boxplot_width, height = boxplot_height)
 
-ggplot(expression_boxplot_df, aes(x = Category, y = mean_expression, fill = Category)) +
-  geom_boxplot() +
-  geom_jitter(width = 0.15, alpha = 0.5, size = 1.5) +
-  facet_wrap(~ dataset, scales = "free_y") +
-  labs(x = NULL, y = NULL, title = NULL) +
-  scale_fill_manual(values = gene_set_cols) +
-  theme_minimal() + theme(legend.position = "none")
-ggsave(filename = paste0(here(), "/Statistical_Tests/Log2v2Mean_Expression_HVG_vs_PG_boxplot_bydataset.jpg"),
-       dpi = 300, width = 10, height = 7)
+#variance
+variance_plot <- make_gene_set_boxplot(expression_boxplot_df, "variance", show_legend = TRUE)
+variance_plot
+save_plot_tif_jpg(variance_plot,
+                  paste0(here(), "/Statistical_Tests/Log2v2Variance_HVG_vs_PG_boxplot_bydataset"),
+                  width = boxplot_width, height = boxplot_height)
 
-ggplot(expression_boxplot_df, aes(x = Category, y = variance, fill = Category)) +
-  geom_boxplot() +
-  geom_jitter(width = 0.15, alpha = 0.5, size = 1.5) +
-  facet_wrap(~ dataset, scales = "free_y") +
-  labs(x = NULL, y = NULL, title = NULL) +
-  scale_fill_manual(values = gene_set_cols) +
-  theme_minimal() + theme(legend.position = "none")
-ggsave(filename = paste0(here(), "/Statistical_Tests/Log2v2Variance_HVG_vs_PG_boxplot_bydataset.jpg"),
-       dpi = 300, width = 10, height = 7)
-
-expression_boxplot_df$gene<-NULL
+expression_boxplot_df$gene <- NULL
 write.csv(expression_boxplot_df, paste0(here(), "/Statistical_Tests/log2_mean_expression_variance_all_datasets.csv"))
 ```
 
 #genes dataframes
-```{r variance boxplots}
+```{r gene-lists}
 gene_dataframes<-data.frame(azimuth_PG=rownames(azimuth),
                             azimuth_HVG=azimuth_hvgs,
                             pbmc_PG=rownames(pbmc),
@@ -278,3 +320,127 @@ gene_dataframes<-data.frame(azimuth_PG=rownames(azimuth),
 write.csv(gene_dataframes, paste0(here(), "/Statistical_Tests/top100genes_all_datasets.csv"))
 ```
 
+#import unlabeled data
+```{r import-unlabeled-data}
+crc        <- read.csv(paste0(here(), "/Main_Data_Hold/Human_CRC_PPS_HVG_Variance_Mean_Top100.csv"), row.names = 1, check.names = FALSE)
+intestines <- read.csv(paste0(here(), "/Main_Data_Hold/Human_Intestines_PPS_HVG_Variance_Mean_Top100.csv"), row.names = 1, check.names = FALSE)
+mouseheart <- read.csv(paste0(here(), "/Main_Data_Hold/Mouse_Heart_PPS_HVG_Variance_Mean_Top100.csv"), row.names = 1, check.names = FALSE)
+pbmcab     <- read.csv(paste0(here(), "/Main_Data_Hold/PBMC_Antibody_GEX_PPS_HVG_Variance_Mean_Top100.csv"), row.names = 1, check.names = FALSE)
+```
+
+#read in unlabeled counts and perform HVG
+```{r read-in-unlabeled-counts}
+library(Seurat)
+
+#Same preprocessing as the labeled datasets
+read_counts <- function(path) {
+  counts <- read.csv(path, row.names = 1)
+  rownames(counts) <- gsub("-", "_", rownames(counts))
+  colnames(counts) <- gsub("\\.", "-", colnames(counts))
+  counts
+}
+
+#Same HVG method as the labeled datasets (dispersion, all genes ranked, top 100 kept)
+get_top_hvgs <- function(counts, n = 100) {
+  so <- CreateSeuratObject(counts = as.matrix(counts))
+  so <- NormalizeData(so)
+  so <- FindVariableFeatures(so, selection.method = "dispersion", nfeatures = nrow(counts))
+  hvgs <- gsub("-", "_", VariableFeatures(so))
+  hvgs[1:n]
+}
+
+crc_count        <- read_counts(paste0(here(), "/Filtered_Input/Human_CRC_subset_counts.csv"))          
+intestines_count <- read_counts(paste0(here(), "/Filtered_Input/Human_Intestines_subset_counts.csv"))   
+mouseheart_count <- read_counts(paste0(here(), "/Filtered_Input/Mouse_Heart_subset_counts.csv"))        
+pbmcab_count     <- read_counts(paste0(here(), "/Filtered_Input/PBMC_antibody_gene_counts.csv"))  
+
+crc_hvgs        <- get_top_hvgs(crc_count)
+intestines_hvgs <- get_top_hvgs(intestines_count)
+mouseheart_hvgs <- get_top_hvgs(mouseheart_count)
+pbmcab_hvgs     <- get_top_hvgs(pbmcab_count)
+```
+
+#unlabeled expression and variance boxplots
+```{r unlabeled-expression-boxplots, fig.width = 7.5, fig.height = 5.25}
+unlabeled_sets <- list(
+  "Human CRC"        = list(pg = rownames(crc),        hvg = crc_hvgs,        counts = crc_count),
+  "Human Intestines" = list(pg = rownames(intestines), hvg = intestines_hvgs, counts = intestines_count),
+  "Mouse Heart"      = list(pg = rownames(mouseheart), hvg = mouseheart_hvgs, counts = mouseheart_count),
+  "PBMC Antibody"    = list(pg = rownames(pbmcab),     hvg = pbmcab_hvgs,     counts = pbmcab_count)
+)
+
+unlabeled_stats <- lapply(names(unlabeled_sets), function(ds) {
+  s <- unlabeled_sets[[ds]]
+  pg  <- get_gene_stats(s$pg,  s$counts); pg$dataset  <- ds; pg$Category  <- "Principal Genes"
+  hvg <- get_gene_stats(s$hvg, s$counts); hvg$dataset <- ds; hvg$Category <- "HVGs"
+  rbind(pg, hvg)
+})
+
+unlabeled_boxplot_df <- do.call(rbind, unlabeled_stats)
+unlabeled_boxplot_df$Category <- factor(unlabeled_boxplot_df$Category,
+                                         levels = c("Principal Genes", "HVGs"))
+unlabeled_boxplot_df$dataset <- factor(unlabeled_boxplot_df$dataset,
+                                        levels = names(unlabeled_sets))  # keep facet order as listed
+
+# Plot 1: mean expression (no legend)
+unlabeled_mean_plot <- make_gene_set_boxplot(unlabeled_boxplot_df, "mean_expression", show_legend = FALSE)
+unlabeled_mean_plot
+save_plot_tif_jpg(unlabeled_mean_plot,
+                  paste0(here(), "/Statistical_Tests/Log2v2Mean_Expression_HVG_vs_PG_boxplot_unlabeled"),
+                  width = boxplot_width, height = boxplot_height)
+
+# Plot 2: variance
+unlabeled_variance_plot <- make_gene_set_boxplot(unlabeled_boxplot_df, "variance", show_legend = TRUE)
+unlabeled_variance_plot
+save_plot_tif_jpg(unlabeled_variance_plot,
+                  paste0(here(), "/Statistical_Tests/Log2v2Variance_HVG_vs_PG_boxplot_unlabeled"),
+                  width = boxplot_width, height = boxplot_height)
+
+unlabeled_boxplot_df$gene <- NULL
+write.csv(unlabeled_boxplot_df, paste0(here(), "/Statistical_Tests/log2_mean_expression_variance_all_unlabeled_datasets.csv"))
+```
+
+#unlabeled genes dataframes
+```{r unlabeled-gene-lists}
+unlabeled_gene_dataframes <- data.frame(crc_PG         = rownames(crc),
+                                        crc_HVG        = crc_hvgs,
+                                        intestines_PG  = rownames(intestines),
+                                        intestines_HVG = intestines_hvgs,
+                                        mouseheart_PG  = rownames(mouseheart),
+                                        mouseheart_HVG = mouseheart_hvgs,
+                                        pbmcab_PG      = rownames(pbmcab),
+                                        pbmcab_HVG     = pbmcab_hvgs)
+
+write.csv(unlabeled_gene_dataframes, paste0(here(), "/Statistical_Tests/top100genes_all_unlabeled_datasets.csv"))
+```
+
+#unlabeled kendall correlation analysis
+```{r kendall-correlation-unlabeled}
+unlabeled_name_map <- c(
+  crc        = "Human CRC",
+  intestines = "Human Intestines",
+  mouseheart = "Mouse Heart",
+  pbmcab     = "PBMC Antibody"
+)
+
+unlabeled_results_list <- lapply(names(unlabeled_name_map), function(nm) {
+  obj <- get(nm)
+  
+  # Convert GPS score to rank (same approach as the labeled datasets)
+  obj$PPS_score_percent <- 1:100
+  names(obj)[names(obj) == "GPS_score_percent"] <- "GPS_rank"
+  
+  test <- cor.test(obj$PPS_rank, obj$HVG_rank, method = "kendall")
+  
+  data.frame(
+    dataset_name = unlabeled_name_map[[nm]],
+    tau = unname(test$estimate),
+    pvalue = test$p.value
+  )
+})
+
+kendall_results_unlabeled <- do.call(rbind, unlabeled_results_list)
+kendall_results_unlabeled
+
+write.csv(kendall_results_unlabeled, paste0(here(), "/Statistical_Tests/Kendall_Correlation_Unlabeled.csv"))
+```
