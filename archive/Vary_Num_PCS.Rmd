@@ -165,17 +165,17 @@ principalgenes <- function(count_matrix, pcs, filters) {
 ```
 
 
-#PBMC-Dataset
+#Tabula Muris Lung Dataset
 ```{r plot-varpcs-pbmc}
 library(here); library(ggplot2); library(skmeans); library(irlba)
 source(paste0(here(), "/clSensitivity.R"))
 
 
-count_matrix <- read.csv(paste0(here(), "/Filtered_Input/PBMCs10xfromSC1.csv"), row.names = 1)
+count_matrix <- read.csv(paste0(here(), "/Filtered_Input/TabulaMuris_Lung_Counts.csv"), row.names = 1)
 rownames(count_matrix) <- gsub("-", "_", rownames(count_matrix))
 colnames(count_matrix) <- gsub("\\.", "-", colnames(count_matrix))
 
-truth <- read.csv(paste0(here(), "/Filtered_Input/PBMCsFromSC1_ClusterLabels.csv"))
+truth <- read.csv(paste0(here(), "/Filtered_Input/TabulaMuris_Lung_Labels.csv"))
 truth$cell <- gsub("\\.", "-", truth$cell)
 filters <- c("riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter")
 
@@ -202,16 +202,16 @@ ggplot(df, aes(n_pcs, accuracy)) +
   geom_smooth(method = "loess", colour = "blue") +
   ylim(0.5, 1) +
   labs(x = NULL, y = NULL, title = NULL)
-ggsave(paste0(here(), "/Properties_and_Performance/PBMC_accuracy_vs_nPCs.jpg"), dpi = 300)
+ggsave(paste0(here(), "/Properties_and_Performance/TabulaMuris_Lung_accuracy_vs_nPCs.jpg"), dpi = 300)
 ```
 
 #Azimuth-Dataset
 ```{r plot-varpcs-azimuth}
-count_matrix <- read.csv(paste0(here(), "/Filtered_Input/Azimuth_filtereddatQC_basicQC_LibraryIDs.csv"), row.names = 1)
+count_matrix <- read.csv(paste0(here(), "/Filtered_Input/Azimuth_MMC_Counts.csv"), row.names = 1)
 rownames(count_matrix) <- gsub("-", "_", rownames(count_matrix))
 colnames(count_matrix) <- gsub("\\.", "-", colnames(count_matrix))
 
-truth <- read.csv(paste0(here(), "/Filtered_Input/Azimuth_ClusterLabels.csv"))
+truth <- read.csv(paste0(here(), "/Filtered_Input/Azimuth_MMC_Labels.csv"))
 truth$cell <- gsub("\\.", "-", truth$cell)
 filters <- c("riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter")
 
@@ -239,3 +239,4 @@ ggplot(df, aes(n_pcs, accuracy)) +
   ylim(0.5, 1) +
   labs(x = NULL, y = NULL, title = NULL)
 ggsave(paste0(here(), "/Properties_and_Performance/Azimuth_accuracy_vs_nPCs.jpg"), dpi = 300)
+```

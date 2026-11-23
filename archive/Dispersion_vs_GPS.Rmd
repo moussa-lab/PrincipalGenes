@@ -1,5 +1,5 @@
 ---
-title: "Dispersion_vs_PPS"
+title: "Dispersion_vs_P=GPS"
 output: html_document
 date: "2026-10-22"
 ---
@@ -34,7 +34,7 @@ LABEL_N <- 20   # genes labeled per category in the plot
 
 # Directories
 INPUT_DIR <- here("Filtered_Input")
-OUT_DIR   <- here("Dispersion_PPS_Plots")
+OUT_DIR   <- here("Dispersion_GPS_Plots")
 
 # Plot appearance
 FONT_FAMILY     <- "Arial"
@@ -44,13 +44,13 @@ LEGEND_POSITION <- c(0, 0)
 datasets <- c(
     Human_Intestines           = "Human_Intestines_subset_counts.csv"
   , Mouse_Heart                = "Mouse_Heart_subset_counts.csv"
-  , PBMC_SC1                   = "PBMCs10xfromSC1.csv"
+  , PBMC_SC1                   = "PBMCs_Counts.csv"
   , TabulaMuris_Liver          = "TabulaMuris_Liver_Counts.csv"
-  , Azimuth_MMC                = "Azimuth_filtereddatQC_basicQC_LibraryIDs.csv"
+  , Azimuth_MMC                = "Azimuth_MMC_Counts.csv"
   , Human_Primary_Motor_Cortex = "Human_Primary_Motor_Cortex.csv"
   , TabulaMuris_Lung           = "TabulaMuris_Lung_Counts.csv"
   , Human_CRC                  = "Human_CRC_subset_counts.csv"
-  , PBMC_Antibody              = "PBMC_antibody_gene_counts.csv"
+  , PBMC12K                    = "PBMC12K_Counts.csv"
   , Pollen                     = "Pollen_TPM_Matrix.csv"
 )
 
@@ -60,7 +60,7 @@ LEGEND_DATASETS <- c(
     , "TabulaMuris_Liver"
     , "Human_Primary_Motor_Cortex"
     , "Human_Intestines"
-    , "PBMC_Antibody"
+    , "PBMC12K"
 )
 ```
 

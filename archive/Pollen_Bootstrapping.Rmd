@@ -1,5 +1,5 @@
 ---
-title: "TabulaMuris_Liver_Bootstrapping"
+title: "Pollen_Bootstrapping"
 output:
   html_document:
     toc: yes
@@ -269,13 +269,13 @@ principalgenes<- function(data = NULL, pcs = -1, cut = -1, filters=c("IgFilter",
 library(here)
 ```
 
-#TabulaMuris_Liver DATASET
+#Pollen DATASET
 ##Read in the dataset
 ```{r read-data}
 
-input_file<-paste0(here(), "/Filtered_Input/TabulaMuris_Liver_Counts.csv")
-truth_file<-paste0(here(), "/Filtered_Input/TabulaMuris_Liver_Labels.csv")
-name<-"TabulaMuris_Liver"
+input_file<-paste0(here(), "/Filtered_Input/Pollen_TPM_Matrix.csv")
+truth_file<-paste0(here(), "/Filtered_Input/Pollen_Labels.csv")
+name<-"Pollen"
 
 count_matrix<-read.csv(input_file, row.names = 1)
 rownames(count_matrix)<-gsub("-", "_", rownames(count_matrix)) # consistent naming purposes
@@ -300,7 +300,7 @@ log_var_mean_df<-tibble(
 
 #get top principal genes
 set.seed(12345)
-principal_genes_results <- principalgenes(count_matrix, cut = 1, filters = c("riboFilter", "mtFilter", "gmFilter", "rikFilter"))
+principal_genes_results <- principalgenes(count_matrix, cut = 1, filters = c("riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter"))
 filtered_counts<-principal_genes_results$count_matrix
 top_50_genes<-names(principal_genes_results$top_genes[1:50])
 
@@ -325,18 +325,6 @@ PC1_and_PC2$numeric_labels <- as.numeric(factor(
   PC1_and_PC2$labels,
   levels = unique(true_labels$label)
 ))
-
-#PCA PLOT
-ggplot(PC1_and_PC2, aes(x=PC1, y=PC2, color=labels))+
-  geom_point(size=3)+
-  scale_color_brewer(palette="Set1",
-                     name = "Label") +
-  theme_minimal() + theme(legend.position = "none")+
-  labs(x = NULL, y = NULL, title = NULL)+
-  theme(plot.title=element_text(hjust=0.5))
-
-ggsave(filename = paste0(here(), "/Bootstrapping_Results/TabulaMuris_Liver_Results/TabulaMuris_Liver_PCA_Plot.jpg"),, 
-    dpi = 300)
 ```
 
 ##BUILD CUMULATIVE GENE LISTS BY THRESHOLD
@@ -519,7 +507,7 @@ plot_df1$label_val <- NA
 plot_df1$label_val[plot_df1$metric == "PG_sensitivity"] <- plot_df1$num_genes[plot_df1$metric == "PG_sensitivity"]
 plot_df1$label_val[plot_df1$metric == "PG_HVG_Union"] <- plot_df1$union_num_genes[plot_df1$metric == "PG_HVG_Union"]
 
-write.csv(plot_df1, file = paste0(here(), "/Bootstrapping_Data_Hold/TabulaMuris_Liver_PG_HVG_Union_CumulativeScore_Subsampled_Accuracy.csv"))
+write.csv(plot_df1, file = paste0(here(), "/Main_Data_Hold/Bootstrapping/Pollen_PG_HVG_Union_CumulativeScore_Subsampled_Accuracy.csv"))
 ```
 
 ##PLOT MEAN CLUSTERING SENSITIVITY VS CUMULATIVE SCORE WITH 95% CI (PG, HVG, UNION)
@@ -564,6 +552,6 @@ ggplot(plot_df1, aes(x = thresholds, y = mean_accuracy, color = metric)) +
   ) +
   theme_minimal() + theme(legend.position = "none")
 
-ggsave(filename = paste0(here(), "/Bootstrapping_Results/TabulaMuris_Liver_Results/TabulaMuris_Liver_PG_HVG_Union_CumulativeScore_Subsampled_Sensitivity.jpg"),, 
+ggsave(filename = paste0(here(), "/Bootstrapping_Results/Pollen_PG_HVG_Union_CumulativeScore_Subsampled_Sensitivity.jpg"),, 
      dpi = 300)
 ```

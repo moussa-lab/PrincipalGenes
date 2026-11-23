@@ -1,5 +1,5 @@
 ---
-title: "TabulaMuris_Lung_Bootstrapping"
+title: "TabulaMuris_Liver_Bootstrapping"
 output:
   html_document:
     toc: yes
@@ -269,13 +269,13 @@ principalgenes<- function(data = NULL, pcs = -1, cut = -1, filters=c("IgFilter",
 library(here)
 ```
 
-#TabulaMuris_Lung DATASET
+#TabulaMuris_Liver DATASET
 ##Read in the dataset
 ```{r read-data}
 
-input_file<-paste0(here(), "/Filtered_Input/TabulaMuris_Lung_Counts.csv")
-truth_file<-paste0(here(), "/Filtered_Input/TabulaMuris_Lung_Labels.csv")
-name<-"Tabula_Muris_Lung"
+input_file<-paste0(here(), "/Filtered_Input/TabulaMuris_Liver_Counts.csv")
+truth_file<-paste0(here(), "/Filtered_Input/TabulaMuris_Liver_Labels.csv")
+name<-"TabulaMuris_Liver"
 
 count_matrix<-read.csv(input_file, row.names = 1)
 rownames(count_matrix)<-gsub("-", "_", rownames(count_matrix)) # consistent naming purposes
@@ -325,18 +325,6 @@ PC1_and_PC2$numeric_labels <- as.numeric(factor(
   PC1_and_PC2$labels,
   levels = unique(true_labels$label)
 ))
-
-#PCA PLOT
-ggplot(PC1_and_PC2, aes(x=PC1, y=PC2, color=labels))+
-  geom_point(size=3)+
-  scale_color_brewer(palette="Set1",
-                     name = "Label") +
-  theme_minimal() + theme(legend.position = "none")+
-  labs(x = NULL, y = NULL, title = NULL)+
-  theme(plot.title=element_text(hjust=0.5))
-
-ggsave(filename = paste0(here(), "/Bootstrapping_Results/TabulaMuris_Lung_Results/TabulaMuris_Lung_PCA_Plot.jpg"),, 
-    dpi = 300)
 ```
 
 ##BUILD CUMULATIVE GENE LISTS BY THRESHOLD
@@ -519,7 +507,7 @@ plot_df1$label_val <- NA
 plot_df1$label_val[plot_df1$metric == "PG_sensitivity"] <- plot_df1$num_genes[plot_df1$metric == "PG_sensitivity"]
 plot_df1$label_val[plot_df1$metric == "PG_HVG_Union"] <- plot_df1$union_num_genes[plot_df1$metric == "PG_HVG_Union"]
 
-write.csv(plot_df1, file = paste0(here(), "/Bootstrapping_Data_Hold/TabulaMuris_Lung_PG_HVG_Union_CumulativeScore_Subsampled_Accuracy.csv"))
+write.csv(plot_df1, file = paste0(here(), "/Main_Data_Hold/Bootstrapping/TabulaMuris_Liver_PG_HVG_Union_CumulativeScore_Subsampled_Accuracy.csv"))
 ```
 
 ##PLOT MEAN CLUSTERING SENSITIVITY VS CUMULATIVE SCORE WITH 95% CI (PG, HVG, UNION)
@@ -564,6 +552,6 @@ ggplot(plot_df1, aes(x = thresholds, y = mean_accuracy, color = metric)) +
   ) +
   theme_minimal() + theme(legend.position = "none")
 
-ggsave(filename = paste0(here(), "/Bootstrapping_Results/TabulaMuris_Lung_Results/TabulaMuris_Lung_PG_HVG_Union_CumulativeScore_Subsampled_Sensitivity.jpg"),, 
+ggsave(filename = paste0(here(), "/Bootstrapping_Results/TabulaMuris_Liver_PG_HVG_Union_CumulativeScore_Subsampled_Sensitivity.jpg"),, 
      dpi = 300)
 ```

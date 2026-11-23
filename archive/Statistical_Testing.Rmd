@@ -288,7 +288,7 @@ expression_boxplot_df$Category <- factor(expression_boxplot_df$Category,
 mean_expr_plot <- make_gene_set_boxplot(expression_boxplot_df, "mean_expression", show_legend = FALSE)
 mean_expr_plot
 save_plot_tif_jpg(mean_expr_plot,
-                  paste0(here(), "/Statistical_Tests/Log2v2Mean_Expression_HVG_vs_PG_boxplot_bydataset"),
+                  paste0(here(), "/Statistical_Tests/Log2v2Mean_Expression_HVG_vs_PG_boxplot_Labeled"),
                   width = boxplot_width, height = boxplot_height)
 
 #variance
@@ -299,7 +299,7 @@ save_plot_tif_jpg(variance_plot,
                   width = boxplot_width, height = boxplot_height)
 
 expression_boxplot_df$gene <- NULL
-write.csv(expression_boxplot_df, paste0(here(), "/Statistical_Tests/log2_mean_expression_variance_all_datasets.csv"))
+write.csv(expression_boxplot_df, paste0(here(), "/Statistical_Tests/log2_mean_expression_variance_all_Labeled.csv"))
 ```
 
 #genes dataframes
@@ -322,10 +322,11 @@ write.csv(gene_dataframes, paste0(here(), "/Statistical_Tests/top100genes_all_da
 
 #import unlabeled data
 ```{r import-unlabeled-data}
-crc        <- read.csv(paste0(here(), "/Main_Data_Hold/Human_CRC_PPS_HVG_Variance_Mean_Top100.csv"), row.names = 1, check.names = FALSE)
-intestines <- read.csv(paste0(here(), "/Main_Data_Hold/Human_Intestines_PPS_HVG_Variance_Mean_Top100.csv"), row.names = 1, check.names = FALSE)
-mouseheart <- read.csv(paste0(here(), "/Main_Data_Hold/Mouse_Heart_PPS_HVG_Variance_Mean_Top100.csv"), row.names = 1, check.names = FALSE)
-pbmcab     <- read.csv(paste0(here(), "/Main_Data_Hold/PBMC_Antibody_GEX_PPS_HVG_Variance_Mean_Top100.csv"), row.names = 1, check.names = FALSE)
+
+crc        <- read.csv(paste0(here(), "/Main_Data_Hold/Human_CRC_PG_subset_100.csv"), row.names = 1, check.names = FALSE)
+intestines <- read.csv(paste0(here(), "/Main_Data_Hold/Human_Intestines_PG_subset_100.csv"), row.names = 1, check.names = FALSE)
+mouseheart <- read.csv(paste0(here(), "/Main_Data_Hold/Mouse_HeartPG_subset_100.csv"), row.names = 1, check.names = FALSE)
+pbmcab     <- read.csv(paste0(here(), "/Main_Data_Hold/PBMC12K_PG_subset_100.csv"), row.names = 1, check.names = FALSE)
 ```
 
 #read in unlabeled counts and perform HVG

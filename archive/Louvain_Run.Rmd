@@ -52,7 +52,7 @@ VIOLIN_NCOL <- 4   #panels per row for violin plots
 #Directories
 INPUT_DIR  <- here("Filtered_Input") #where to find count matrices
 OUT_ROOT   <- here("Unsupervised_Results")  #each dataset gets <OUT_ROOT>/<name>/ folder where output is stored
-EXPORT_DIR <- here("Subset_Counts")         #where TOP-N count matrix subsets
+EXPORT_DIR <- here("Main_Data_Hold")         #where TOP-N count matrix subsets
 
 #Plot appearance
 FONT_FAMILY     <- "Arial"
@@ -72,13 +72,13 @@ COL_UNION <- "#2C9F45"
 datasets <- c(
     Human_Intestines           = "Human_Intestines_subset_counts.csv"
   , Mouse_Heart                = "Mouse_Heart_subset_counts.csv"
-  , PBMC_SC1                   = "PBMCs10xfromSC1.csv"
+  , PBMC_SC1                   = "PBMCs_Counts.csv"
   , TabulaMuris_Liver          = "TabulaMuris_Liver_Counts.csv"
-  , Azimuth_MMC                = "Azimuth_filtereddatQC_basicQC_LibraryIDs.csv"
+  , Azimuth_MMC                = "Azimuth_MMC_Counts.csv"
   , Human_Primary_Motor_Cortex = "Human_Primary_Motor_Cortex.csv"
   , TabulaMuris_Lung           = "TabulaMuris_Lung_Counts.csv"
   , Human_CRC                  = "Human_CRC_subset_counts.csv"
-  , PBMC_Antibody              = "PBMC_antibody_gene_counts.csv"
+  , PBMC12K              = "PBMC12K_Counts.csv"
   , Pollen                     = "Pollen_TPM_Matrix.csv"
 )
 
@@ -88,7 +88,7 @@ LEGEND_DATASETS <- c(
     , "TabulaMuris_Liver"
     , "Human_Primary_Motor_Cortex"
     , "Human_Intestines"
-    , "PBMC_Antibody"
+    , "PBMC12K"
 )
 ```
 

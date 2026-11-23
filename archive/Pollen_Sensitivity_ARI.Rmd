@@ -331,7 +331,7 @@ ggplot(PC1_and_PC2, aes(x=PC1, y=PC2, color=labels))+
   theme_minimal() + theme(legend.position = "none")+
   labs(x = NULL, y = NULL, title = NULL)+
   theme(plot.title=element_text(hjust=0.5))
-ggsave(filename = paste0(here(), "/Sensitivity_ARI_Results/Pollen_Results/Pollen_PCA_Plot.jpg"),, 
+ggsave(filename = paste0(here(), "/PCA_Plots/Pollen_PCA_Plot.jpg"),, 
      dpi = 300)
 ```
 
@@ -400,12 +400,6 @@ for (i in 1:length(selectedGeneList)){
 labels_vs_clust <- data.frame(
     PG_labels     = PG_groups_sk[[1]]
 )
-labels_vs_clust$truth_labels <- true_labels_vector[rownames(labels_vs_clust)]
-celltype_vec <- setNames(true_labels$label, true_labels$cell)
-labels_vs_clust$celltype <- celltype_vec[rownames(labels_vs_clust)]
-write.csv(labels_vs_clust, paste0(here(), "/Main_Data_Hold/", name, "_truth_vs_clustering.csv"))
-smaller_count_matrix<-count_matrix[names(principal_genes_results$top_genes[1:100]),]
-write.csv(smaller_count_matrix, paste0(here(), "/Main_Data_Hold/", name, "_top100PG_count_matrix.csv"))
 ```
 
 ##SK_MEANS CLUSTERING USING HVGS
@@ -506,8 +500,6 @@ points_sk <- data.frame(
   union_num_genes = as.integer(sapply(pg_hvg_union, length))
 )
 
-write.csv(points_sk, file=paste0(here(), "/Main_Data_Hold/Pollen_SKM_accuracy_results.csv"))
-
 # Long (tidy) format for ggplot
 plot_df1 <- points_sk %>%
   pivot_longer(
@@ -564,7 +556,7 @@ ggplot(plot_df1, aes(x = thresholds, y = sensitivity, color = metric)) +
   ) +
   theme_minimal() + theme(legend.position = "none")
 
-ggsave(filename = paste0(here(), "/Sensitivity_ARI_Results/Pollen_Results/Pollen_PG_HVG_UNION_Sensitivity.jpg"),, 
+ggsave(filename = paste0(here(), "/Clustering_Sensitivity/Pollen_PG_HVG_UNION_Sensitivity.jpg"),, 
      dpi = 300)
 
 #adjustedRandIndex
@@ -586,7 +578,6 @@ points_sk <- data.frame(
   num_genes = as.integer(num_genes),
   union_num_genes = as.integer(sapply(pg_hvg_union, length))
 )
-write.csv(points_sk, file=paste0(here(), "/Main_Data_Hold/Pollen_SKM_rand_index_results.csv"))
 
 # Long (tidy) format for ggplot
 plot_df <- points_sk %>%
@@ -646,138 +637,7 @@ ggplot(plot_df, aes(x = thresholds, y = adjustedRandIndex, color = metric)) +
   ) +
   theme_minimal() + theme(legend.position = "none")
 
-ggsave(filename = paste0(here(), "/Sensitivity_ARI_Results/Pollen_Results/Pollen_PG_HVG_UNION_RandIndex.jpg"),, 
-     dpi = 300)
-
-```
-##NO OUTLIERS
-```{r}
-add_loess_ci <- function(df, span = 1, degree = 1, surface = "direct") {
-  mod <- loess(sensitivity ~ thresholds, data = df,
-               span = span, degree = degree, surface = surface)
-  pr  <- predict(mod, newdata = data.frame(thresholds = df$thresholds), se = TRUE)
-
-  df$fit   <- pr$fit
-  df$se    <- pr$se.fit
-  df$lower <- df$fit - 1.96 * df$se
-  df$upper <- df$fit + 1.96 * df$se
-  df$outlier <- df$sensitivity < df$lower | df$sensitivity > df$upper
-  df
-}
-
-# Apply per metric
-plot_df1 <- plot_df1 %>%
-  group_by(metric) %>%
-  group_modify(~ add_loess_ci(.x, span = 1, degree = 1, surface = "direct")) %>%
-  ungroup()
-
-# Filter out outliers
-plot_df1_filtered <- plot_df1 %>% filter(!outlier)
-
-ggplot(plot_df1_filtered, aes(x = thresholds, y = sensitivity, color = metric)) +
-  geom_point(size = 2) +
-
-  # PG labels
-  geom_text(
-    data = subset(plot_df1_filtered, metric == "PG_sensitivity"),
-    aes(label = label_val),
-    color = "#1BB7D8", vjust = +2, size = 3, check_overlap = TRUE
-  ) +
-
-  # Union labels
-  geom_text(
-    data = subset(plot_df1_filtered, metric == "PG_HVG_Union"),
-    aes(label = label_val),
-    color = "darkgreen", vjust = -2, size = 3, check_overlap = TRUE
-  ) +
-
-  geom_smooth(
-    method = "loess",
-    method.args = list(span = 1, degree = 1, surface = "direct"),
-    se = FALSE
-  ) +
-  scale_y_continuous(limits = c(0, 1)) +
-  labs(x = NULL, y = NULL, title = NULL) +
-  scale_color_manual(
-    breaks = c("PG_sensitivity","HVG_sensitivity","PG_HVG_Union"),
-    values = c(
-      "PG_sensitivity"  = "#1BB7D8",
-      "HVG_sensitivity" = "#E55B1E",
-      "PG_HVG_Union"    = "#2C9F45"
-    ),
-    labels = c(
-      "PG_sensitivity"  = "Principal Genes",
-      "HVG_sensitivity" = "Seurat's HVG",
-      "PG_HVG_Union"    = "HVG_PG_Union"
-    )
-  ) +
-  theme_minimal() + theme(legend.position = "none")
-
-ggsave(filename = paste0(here(), "/Sensitivity_ARI_Results/Pollen_Results/Pollen_PG_HVG_UNION_No_Outliers_Sensitivity.jpg"),, 
-     dpi = 300)
-
-add_loess_ci <- function(df, span = 1, degree = 1, surface = "direct") {
-  mod <- loess(adjustedRandIndex ~ thresholds, data = df,
-               span = span, degree = degree, surface = surface)
-  pr  <- predict(mod, newdata = data.frame(thresholds = df$thresholds), se = TRUE)
-
-  df$fit   <- pr$fit
-  df$se    <- pr$se.fit
-  df$lower <- df$fit - 1.96 * df$se
-  df$upper <- df$fit + 1.96 * df$se
-  df$outlier <- df$adjustedRandIndex < df$lower | df$adjustedRandIndex > df$upper
-  df
-}
-
-# Apply per metric
-plot_df <- plot_df %>%
-  group_by(metric) %>%
-  group_modify(~ add_loess_ci(.x, span = 1, degree = 1, surface = "direct")) %>%
-  ungroup()
-
-# Filter out outliers
-plot_df_filtered <- plot_df %>% filter(!outlier)
-
-ggplot(plot_df_filtered, aes(x = thresholds, y = adjustedRandIndex, color = metric)) +
-  geom_point(size = 2) +
-
-  # PG labels
-  geom_text(
-    data = subset(plot_df_filtered, metric == "PG_randIndex"),
-    aes(label = label_val),
-    color = "#1BB7D8", vjust = +2, size = 3, check_overlap = TRUE
-  ) +
-
-  # Union labels
-  geom_text(
-    data = subset(plot_df_filtered, metric == "PG_HVG_UnionRand"),
-    aes(label = label_val),
-    color = "darkgreen", vjust = -2, size = 3, check_overlap = TRUE
-  ) +
-
-  geom_smooth(
-    method = "loess",
-    method.args = list(span = 1, degree = 1, surface = "direct"),
-    se = FALSE
-  ) +
-  scale_y_continuous(limits = c(0, 1)) +
-  labs(x = NULL, y = NULL, title = NULL) +
-  scale_color_manual(
-    breaks = c("PG_randIndex","HVG_randIndex","PG_HVG_UnionRand"),
-    values = c(
-      "PG_randIndex"  = "#1BB7D8",
-      "HVG_randIndex" = "#E55B1E",
-      "PG_HVG_UnionRand"    = "#2C9F45"
-    ),
-    labels = c(
-      "PG_randIndex"  = "Principal Genes",
-      "HVG_randIndex" = "Seurat's HVG",
-      "PG_HVG_UnionRand"    = "HVG_PG_Union"
-    )
-  ) +
-  theme_minimal() + theme(legend.position = "none")
-
-ggsave(filename = paste0(here(), "/Sensitivity_ARI_Results/Pollen_Results/Pollen_PG_HVG_UNION_No_Outliers_Sensitivity.jpg"),, 
+ggsave(filename = paste0(here(), "/Asjusted_Rand_Index/Pollen_PG_HVG_UNION_RandIndex.jpg"),, 
      dpi = 300)
 
 ```
@@ -824,151 +684,4 @@ raw_scores_df <- data.frame(
 
 write.csv(intersect_df, file = paste0(here(), "/Main_Data_Hold/Pollen_PPS_HVG_Variance_Mean_Intersect.csv"))
 write.csv(raw_scores_df, file = paste0(here(), "/Main_Data_Hold/Pollen_PPS_HVG_Variance_Mean_Top100.csv"))
-```
-
-##FINAL PLOTS FROM HVG-only genes and PPS-only genes
-```{r}
-library(dplyr)
-library(ggplot2)
-library(ggrepel)
-
-#plot dispersion vs pps
-genes <- rownames(count_matrix)
-
-graphdf <- data.frame(
-  genes = genes,
-  Dispersion = scored_hvg[match(genes, names(scored_hvg))],
-  PPS = principal_genes_results$top_genes[match(genes, names(principal_genes_results$top_genes))]
-)
-
-
-#Compare PPS and Dispersion
-pg20   <- head(pg_only_gene_names[pg_only_gene_names %in% graphdf$genes], 20)
-hvg20  <- head(hvg_only_gene_names[hvg_only_gene_names %in% graphdf$genes], 20)
-both20 <- head(common_gene_names[common_gene_names %in% graphdf$genes], 20)
-
-# Build comparison df with categories
-comparison_df <- graphdf %>%
-  mutate(
-    category = case_when(
-      genes %in% pg20   ~ "PG only",
-      genes %in% hvg20  ~ "HVG only",
-      genes %in% both20 ~ "Both PG & HVG",
-      TRUE              ~ "Other"
-    ),
-    category = factor(category, levels = c("PG only", "HVG only", "Both PG & HVG", "Other"))
-  ) %>%
-  filter(is.finite(PPS), is.finite(Dispersion))
-
-# Separate for background vs highlights
-other_df     <- comparison_df %>% filter(category == "Other")
-highlight_df <- comparison_df %>% filter(category != "Other")
-
-# Plot: PPS vs Dispersion with highlighted top-20s
-ggplot() +
-  # Background points
-  geom_point(
-    data = other_df,
-    aes(x = PPS, y = Dispersion),
-    color = "grey70", alpha = 0.4, size = 1.6
-  ) +
-  # Highlighted categories
-  geom_point(
-    data = highlight_df,
-    aes(x = PPS, y = Dispersion, color = category),
-    alpha = 0.7, size = 1.8
-  ) +
-  # Labels for highlighted genes
-  ggrepel::geom_text_repel(
-    data = highlight_df,
-    aes(x = PPS, y = Dispersion, label = genes, color = category),
-    size = 2.5, max.overlaps = Inf, show.legend = FALSE
-  ) +
-  labs(x = NULL, y = NULL, title = NULL) +
-  theme_minimal() + theme(legend.position = "none") +
-  scale_color_manual(
-    values = c(
-      "PG only"       = "#1BB7D8",
-      "HVG only"      = "#E55B1E",
-      "Both PG & HVG" = "#2C9F45"
-    )
-  ) +
-  theme(plot.title = element_text(hjust = 0.5))
-ggsave(filename = paste0(here(), "/Sensitivity_ARI_Results/Pollen_Results/Pollen_PS_Dispersion_Comparison.jpg"),, 
-     dpi = 300)
-
-# Build comparison_df with all categories
-comparison_df <- log_var_mean_df %>%
-  mutate(
-    category = case_when(
-      gene_id %in% pg_only_gene_names[1:20]   ~ "PG only",
-      gene_id %in% hvg_only_gene_names[1:20]  ~ "HVG only",
-      gene_id %in% common_gene_names[1:20]    ~ "Both PG & HVG",
-      TRUE ~ "Other"
-    )
-  )
-
-# Separate dataframes
-other_df   <- comparison_df %>% filter(category == "Other")
-highlight_df <- comparison_df %>% filter(category != "Other")
-
-# Plot
-ggplot() +
-  # Background grey points (no legend)
-  geom_point(
-    data = other_df,
-    aes(x = log_mean, y = log_var),
-    color = "grey70", alpha = 0.4, size = 1.6, inherit.aes = FALSE
-  ) +
-  # Highlighted points with legend
-  geom_point(
-    data = highlight_df,
-    aes(x = log_mean, y = log_var, color = category),
-    alpha = 0.7, size = 1.8
-  ) +
-  # Labels for all highlight genes
-  ggrepel::geom_text_repel(
-    data = highlight_df,
-    aes(x = log_mean, y = log_var, label = gene_id, color = category),
-    size = 2.5, max.overlaps = Inf, show.legend = FALSE
-  ) +
-  labs(x = NULL, y = NULL, title = NULL) +
-  theme_minimal() + theme(legend.position = "none") +
-  scale_color_manual(
-    values = c(
-      "PG only"       = "#1BB7D8",
-      "HVG only"      = "#E55B1E",
-      "Both PG & HVG" = "#2C9F45"
-    )
-  ) +
-  theme(plot.title = element_text(hjust = 0.5)) +
-  geom_abline(slope = 1, intercept = 0, linetype = 2, color = "red")
-
-ggsave(filename = paste0(here(), "/Sensitivity_ARI_Results/Pollen_Results/Pollen_PG_HVG_INTERSECT_Log10_mean_variance.jpg"),, 
-     dpi = 300)
-
-##VIOLIN PLOT
-VlnPlot(norm_seuratObject, features=pg_only_gene_names[1:9]) & 
-  theme(axis.title.x = element_blank(),
-        axis.text.x = element_blank(),
-        axis.title.y = element_blank(),
-        legend.position = "none")
-ggsave(filename = paste0(here(), "/Sensitivity_ARI_Results/Pollen_Results/Pollen_PG_Only_Violin_Plot.jpg"),, 
-     dpi = 300)
-
-VlnPlot(norm_seuratObject, features=hvg_only_gene_names[1:9]) & 
-  theme(axis.title.x = element_blank(),
-        axis.text.x = element_blank(),
-        axis.title.y = element_blank(),
-        legend.position = "none")
-ggsave(filename = paste0(here(), "/Sensitivity_ARI_Results/Pollen_Results/Pollen_HVG_Only_Violin_Plot.jpg"),, 
-     dpi = 300)
-
-VlnPlot(norm_seuratObject, features=common_gene_names[1:9]) & 
-  theme(axis.title.x = element_blank(),
-        axis.text.x = element_blank(),
-        axis.title.y = element_blank(),
-        legend.position = "none")
-ggsave(filename = paste0(here(), "/Sensitivity_ARI_Results/Pollen_Results/Pollen_PG_HVG_INTERSECT_Violin_Plot.jpg"),, 
-    dpi = 300)
 ```

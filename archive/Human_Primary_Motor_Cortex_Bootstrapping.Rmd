@@ -1,5 +1,5 @@
 ---
-title: "Azimuth_MMC_Bootstrapping"
+title: "Human_Primary_Motor_Cortex_Bootstrapping"
 output:
   html_document:
     toc: yes
@@ -17,7 +17,7 @@ knitr::opts_chunk$set(
 
 #Install R packages
 ```{r install-packages}
-pkgs <- c("here", "ggplot2", "dplyr", "Seurat", "skmeans", "mclust", "tidyr", "ggrepel", "stringr")
+pkgs <- c("here", "ggplot2", "dplyr", "Seurat", "skmeans", "mclust", "tidyr", "ggrepel", "stringr", "igraph")
 to_install <- setdiff(pkgs, rownames(installed.packages()))
 if (length(to_install)) {
   install.packages(to_install)
@@ -188,7 +188,7 @@ principalgenes<- function(data = NULL, pcs = -1, cut = -1, filters=c("IgFilter",
   
   message("Calculating optimal number of PCs via elbow method:")
   if(pcs == -1 || pcs >= 20 || pcs >= 0.05*ncol(data)){
-    temp<- irlba::prcomp_irlba(t(log2(data+1)), n = min(20, 0.05*ncol(data)), retx = TRUE, center = TRUE, scale. = TRUE)
+    temp<- irlba::prcomp_irlba(t(data), n = min(20, 0.05*ncol(data)), retx = TRUE, center = TRUE, scale. = TRUE)
     eig = temp$sdev^2
     pcs = quick.elbow(eig)
     rm(eig, temp)
@@ -197,7 +197,7 @@ principalgenes<- function(data = NULL, pcs = -1, cut = -1, filters=c("IgFilter",
   message("Values set: pcs = ", pcs, ", chosen cutoff = ", cut)
 
   #transpose the data to have genes as columns and cells as rows
-  rotated_output <- irlba::prcomp_irlba(t(log2(data+1)), n = pcs, retx = TRUE, center = TRUE, scale. = TRUE)
+  rotated_output <- irlba::prcomp_irlba(t(data), n = pcs, retx = TRUE, center = TRUE, scale. = TRUE)
 
   #prepare to represent results
   summary<- summary(rotated_output)
@@ -265,23 +265,25 @@ principalgenes<- function(data = NULL, pcs = -1, cut = -1, filters=c("IgFilter",
 ```
 
 #Global Library
-```{r}
+```{r here-library}
 library(here)
 ```
 
-#AZIMUTH DATASET
+#Human_Primary_Motor_Cortex DATASET
 ##Read in the dataset
-```{r read-in-data}
+```{r read-data}
 
-input_file<-paste0(here(), "/Filtered_Input/Azimuth_filtereddatQC_basicQC_LibraryIDs.csv")
-truth_file<-paste0(here(), "/Filtered_Input/Azimuth_ClusterLabels.csv")
-name<-"Azimuth"
+input_file<-paste0(here(), "/Filtered_Input/Human_Primary_Motor_Cortex.csv")
+truth_file<-paste0(here(), "/Filtered_Input/Human_Primary_Motor_CortexLabels.csv")
+name<-"Human_Primary_Motor_Cortex"
 
-count_matrix<-read.csv(input_file, check.names = FALSE, row.names = 1)
+count_matrix<-read.csv(input_file, row.names = 1)
+rownames(count_matrix)<-gsub("-", "_", rownames(count_matrix)) # consistent naming purposes
+colnames(count_matrix)<-gsub("\\.", "-", colnames(count_matrix))
 ```
 
 ##Get principal genes and highlight them on the log_var_mean_plot
-```{r principal-genes-running}
+```{r get-principal-genes}
 
 #plot variance vs mean expression
 library(ggplot2)
@@ -296,17 +298,23 @@ log_var_mean_df<-tibble(
   log_var = log10(row_var + 1)
 )
 
+#get top principal genes
 set.seed(12345)
-principal_genes_results <- principalgenes(count_matrix, cut = 1, filters = c("riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter"))
+principal_genes_results <- principalgenes(count_matrix, cut = 1, filters = c("riboFilter", "mtFilter", "gmFilter", "rikFilter"))
 filtered_counts<-principal_genes_results$count_matrix
-top_100_genes<-names(principal_genes_results$top_genes[1:50])
+top_50_genes<-names(principal_genes_results$top_genes[1:50])
+
+#highlight top genes selected by principal genes method
+log_var_mean_df<- log_var_mean_df %>% mutate(highlight = gene_id %in% top_50_genes)
 ```
+
 ##PCA PLOT
-```{r plot-pca}
+```{r pca-plot}
 PC1_and_PC2<-as.data.frame(principal_genes_results$rotated_output$x, row.names = colnames(filtered_counts))
 
 #get true labels
-full_true_labels<-read.csv(truth_file, check.names = FALSE)
+full_true_labels<-read.csv(truth_file)
+full_true_labels$cell<-gsub("\\.", "-", full_true_labels$cell)
 full_true_labels$numeric_labels<-as.numeric(factor(
   full_true_labels$label,
   levels = unique(full_true_labels$label)
@@ -317,18 +325,6 @@ PC1_and_PC2$numeric_labels <- as.numeric(factor(
   PC1_and_PC2$labels,
   levels = unique(true_labels$label)
 ))
-
-#PCA PLOT
-ggplot(PC1_and_PC2, aes(x=PC1, y=PC2, color=labels))+
-  geom_point(size=3)+
-  scale_color_brewer(palette="Spectral",
-                     name = "Label") +
-  theme_minimal() + theme(legend.position = "none")+
-  labs(x = NULL, y = NULL, title = NULL)+
-  theme(plot.title=element_text(hjust=0.5))
-
-ggsave(filename = paste0(here(), "/Bootstrapping_Results/Azimuth_Results/Azimuth_PCA_Plot.jpg"),, 
-     dpi = 300)
 ```
 
 ##BUILD CUMULATIVE GENE LISTS BY THRESHOLD
@@ -385,9 +381,8 @@ Idents(seuratObject) <- "All_Cells"
 norm_seuratObject <- NormalizeData(seuratObject)
 seuratObject <- FindVariableFeatures(norm_seuratObject, selection.method = "dispersion", nfeatures = length(rownames(count_matrix))) #dispersion value = log(variance/mean)
 
-
 scored_hvg <- seuratObject[["RNA"]]@meta.data$vf_disp_data_mvp.dispersion
-names(scored_hvg) <- rownames(count_matrix)
+names(scored_hvg) <- rownames(count_matrix) #restore original gene names (order-preserved)
 scored_hvg[is.na(scored_hvg)] <- 0
 scored_hvg <- sort(decreasing = TRUE, scored_hvg)
 HVGs <- names(scored_hvg) #descending-order HVG gene names, aligned with count_matrix rownames
@@ -487,7 +482,7 @@ points_sk <- data.frame(
   Union_ci_upper    = union_summary$ci_upper
 )
 
-# "PLOT CLUSTERING RESULTS COMPARING HVGS AND CUMULATIVE SCORE"
+# Long (tidy) format for ggplot
 plot_df1 <- bind_rows(
   data.frame(thresholds = points_sk$thresholds, num_genes = points_sk$num_genes,
              union_num_genes = points_sk$union_num_genes,
@@ -503,13 +498,16 @@ plot_df1 <- bind_rows(
              ci_upper = points_sk$Union_ci_upper, metric = "PG_HVG_Union")
 )
 
+#control legend order
 plot_df1$metric <- factor(plot_df1$metric,
                            levels = c("PG_sensitivity", "HVG_sensitivity", "PG_HVG_Union"))
+
+#add labels for gene-count annotations
 plot_df1$label_val <- NA
 plot_df1$label_val[plot_df1$metric == "PG_sensitivity"] <- plot_df1$num_genes[plot_df1$metric == "PG_sensitivity"]
 plot_df1$label_val[plot_df1$metric == "PG_HVG_Union"] <- plot_df1$union_num_genes[plot_df1$metric == "PG_HVG_Union"]
 
-write.csv(plot_df1, file = paste0(here(), "/Bootstrapping_Data_Hold/Azimuth_PG_HVG_Union_CumulativeScore_Subsampled_Accuracy.csv"))
+write.csv(plot_df1, file = paste0(here(), "/Main_Data_Hold/Bootstrapping/Human_Primary_Motor_Cortex_PG_HVG_Union_CumulativeScore_Subsampled_Accuracy.csv"))
 ```
 
 ##PLOT MEAN CLUSTERING SENSITIVITY VS CUMULATIVE SCORE WITH 95% CI (PG, HVG, UNION)
@@ -554,6 +552,6 @@ ggplot(plot_df1, aes(x = thresholds, y = mean_accuracy, color = metric)) +
   ) +
   theme_minimal() + theme(legend.position = "none")
 
-ggsave(filename = paste0(here(), "/Bootstrapping_Results/Azimuth_Results/Azimuth_PG_HVG_Union_CumulativeScore_Subsampled_Sensitivity.jpg"),, 
+ggsave(filename = paste0(here(), "/Bootstrapping_Results/Human_Primary_Motor_Cortex_PG_HVG_Union_CumulativeScore_Subsampled_Sensitivity.jpg"),, 
      dpi = 300)
 ```

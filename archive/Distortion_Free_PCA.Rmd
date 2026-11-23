@@ -25,6 +25,7 @@ library(ggplot2)
 library(dplyr)
 library(Seurat)
 library(skmeans)
+library(mclust)
 library(tidyr)
 library(ggrepel)
 library(stringr)
@@ -171,8 +172,8 @@ zscore_normalise <- function(count_matrix, epsilon = 1e-10) {
 
 #PRINCIPAL GENES ALGO
 ```{r main-algo}
-input_file<-paste0(here(), "/Filtered_Input/PBMCs10xfromSC1.csv")
-truth_file<-paste0(here(), "/Basic_input/PBMCsFromSC1_ClusterLabels.csv")
+input_file<-paste0(here(), "/Filtered_Input/PBMCs_Counts.csv")
+truth_file<-paste0(here(), "/Filtered_Input/PBMCs_Labels.csv")
 name<-"PBMC"
 
 data<-read.csv(input_file, check.names = FALSE, row.names = 1)
@@ -268,18 +269,10 @@ for (pc in paste0("PC", 1:6)) {
 
 ```
 
-#Global Library
-```{r}
-
-```
-
 ##Get principal genes and highlight them on the log_var_mean_plot
 ```{r}
 
 #plot variance vs mean expression
-library(ggplot2)
-library(dplyr)
-
 row_means<-rowMeans(count_matrix, na.rm=TRUE)
 row_var<- apply(count_matrix, 1, var, na.rm=TRUE)
 
@@ -292,14 +285,11 @@ log_var_mean_df<-tibble(
 set.seed(12345)
 principal_genes_results <- principalgenes(count_matrix, cut = 1, filters = c("riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter"))
 filtered_counts<-principal_genes_results$count_matrix
-write.csv(principal_genes_results$count_matrix, paste0(here(), "/Filtered_Count_Matrices/", name, "_filtered_count_matrix.csv"))
 top_100_genes<-names(principal_genes_results$top_genes[1:50])
 
 ```
 
 ```{r do-hvg-violin}
-
-genes<-c("GNLY", "GZMB", "NKG7", "HOPX", "TYROBP", "GZMA", "CST7", "FCER1G", "CTSW")
 library(Seurat)
 set.seed(12345)
 count_matrixx<-read.csv(input_file, check.names = FALSE, row.names = 1)
