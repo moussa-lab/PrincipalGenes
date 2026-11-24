@@ -1,0 +1,231 @@
+---
+title: "Dispersion_vs_GPS"
+output: html_document
+date: "2026-10-22"
+---
+
+# Install and load R packages
+```{r install-packages}
+
+########### DISCLAIMER: AI USED TO AID WITH PLOT FORMATTING FOR PRESENTATION PURPOSES ###############
+
+pkgs <- c("here", "ggplot2", "dplyr", "ggrepel")
+to_install <- setdiff(pkgs, rownames(installed.packages()))
+if (length(to_install)) {
+  install.packages(to_install)
+}
+
+for (p in pkgs) library(p, character.only = TRUE)
+```
+
+# Constants (edit everything here)
+```{r define-constants}
+# Gene set sizes
+TOP_N   <- 100  # top genes compared between PG and HVG
+LABEL_N <- 20   # genes labeled per category in the plot
+
+# Directories
+GENE_DIR <- here("Data_Hold", "Gene_Scores")        # written by Extract_Principal_Genes_and_HVGs.Rmd
+CSV_DIR  <- here("Data_Hold", "Dispersion_vs_GPS")  # output CSVs
+PLOT_DIR <- here("Dispersion_GPS_Plots")            # output plots
+
+# Plot appearance
+FONT_FAMILY     <- "Arial"
+LEGEND_POSITION <- c(0, 0)
+
+# Comment out a line to skip that dataset (names must match the extraction Rmd prefixes)
+datasets <- c(
+    "Human_Intestines"
+  , "Mouse_Heart"
+  , "PBMCs"
+  , "TabulaMuris_Liver"
+  , "Azimuth_MMC"
+  , "Human_Primary_Motor_Cortex"
+  , "TabulaMuris_Lung"
+  , "Human_CRC"
+  , "PBMC12K"
+  , "Pollen"
+)
+
+# Datasets whose plot shows a legend (use character(0) for none)
+LEGEND_DATASETS <- c(
+    "TabulaMuris_Lung"
+  , "TabulaMuris_Liver"
+  , "Human_Primary_Motor_Cortex"
+  , "Human_Intestines"
+  , "PBMC12K"
+)
+```
+
+# Functions
+```{r define-functions}
+gene_score_path <- function(name) {
+  file.path(GENE_DIR, paste0(name, "_gene_scores.csv"))
+}
+
+# Read precomputed gene scores; 0 means "dropped / not scored" -> NA
+read_gene_scores <- function(name) {
+  gs <- read.csv(gene_score_path(name), check.names = FALSE, stringsAsFactors = FALSE)
+  gs$GPS[gs$GPS == 0]                       <- NA
+  gs$HVG_Dispersion[gs$HVG_Dispersion == 0] <- NA
+  gs
+}
+
+# Named vector of non-NA scores, sorted descending
+sorted_scores <- function(values, genes) {
+  keep <- !is.na(values)
+  sort(setNames(values[keep], genes[keep]), decreasing = TRUE)
+}
+
+# Same structure compute_scores() used to return
+load_scores <- function(gs) {
+  list(
+    scored_pgs = sorted_scores(gs$GPS,            gs$Gene),
+    scored_hvg = sorted_scores(gs$HVG_Dispersion, gs$Gene)
+  )
+}
+
+# Build the plotting data frame with categories assigned
+build_plot_df <- function(scores, all_genes) {
+  top_pgs  <- names(head(scores$scored_pgs, TOP_N))
+  top_hvgs <- names(head(scores$scored_hvg, TOP_N))
+
+  common_genes   <- intersect(top_pgs, top_hvgs)
+  pg_only_genes  <- setdiff(top_pgs, common_genes)
+  hvg_only_genes <- setdiff(top_hvgs, common_genes)
+
+  top_common   <- head(common_genes, LABEL_N)
+  top_pg_only  <- head(pg_only_genes, LABEL_N)
+  top_hvg_only <- head(hvg_only_genes, LABEL_N)
+
+  plot_df <- data.frame(
+    genes      = all_genes,
+    PPS        = unname(scores$scored_pgs[all_genes]),
+    Dispersion = unname(scores$scored_hvg[all_genes]),
+    stringsAsFactors = FALSE
+  )
+  # Unscored genes sit on the axes, as in the original figure
+  plot_df$PPS[is.na(plot_df$PPS)]               <- 0
+  plot_df$Dispersion[is.na(plot_df$Dispersion)] <- 0
+
+  plot_df %>%
+    mutate(category = case_when(
+      genes %in% top_common   ~ "Both PG & HVG",
+      genes %in% top_pg_only  ~ "PG only",
+      genes %in% top_hvg_only ~ "HVG only",
+      TRUE                    ~ NA_character_
+    ))
+}
+
+# Table of top PGs with their rank and score in the full HVG list
+build_top_pg_table <- function(scores) {
+  top_pgs  <- head(scores$scored_pgs, TOP_N)
+  hvg_rank <- match(names(top_pgs), names(scores$scored_hvg))  # NA if not scored
+
+  data.frame(
+    gene       = names(top_pgs),
+    PG_rank    = seq_along(top_pgs),
+    PPS        = unname(top_pgs),
+    HVG_rank   = hvg_rank,
+    Dispersion = unname(scores$scored_hvg[hvg_rank]),
+    stringsAsFactors = FALSE
+  )
+}
+
+# Make the PPS vs dispersion plot
+make_plot <- function(plot_df, show_legend = FALSE) {
+  highlight_df <- plot_df %>% filter(!is.na(category))
+  other_df     <- plot_df %>% filter(is.na(category))
+
+  ggplot() +
+    geom_point(
+      data = other_df,
+      aes(x = PPS, y = Dispersion),
+      color = "grey70", alpha = 0.4, size = 1.6
+    ) +
+    geom_point(
+      data = highlight_df,
+      aes(x = PPS, y = Dispersion, color = category),
+      alpha = 0.7, size = 1.8
+    ) +
+    ggrepel::geom_text_repel(
+      data = highlight_df,
+      aes(x = PPS, y = Dispersion, label = genes, color = category),
+      size = 8 / .pt, family = FONT_FAMILY,
+      max.overlaps = Inf, show.legend = FALSE
+    ) +
+    labs(x = "GPS", y = "Dispersion") +
+    scale_color_manual(
+      breaks = c("PG only", "HVG only", "Both PG & HVG"),
+      values = c(
+        "PG only"       = "#1BB7D8",
+        "HVG only"      = "#E55B1E",
+        "Both PG & HVG" = "#2C9F45"
+      )
+    ) +
+    theme_minimal(base_size = 10, base_family = FONT_FAMILY) +
+    theme(
+      legend.position             = if (show_legend) "inside" else "none",
+      legend.position.inside      = LEGEND_POSITION,
+      legend.justification.inside = LEGEND_POSITION,
+      legend.box.margin           = margin(4, 4, 4, 4),
+      legend.title                = element_blank(),
+      legend.background           = element_rect(fill = alpha("white", 0.8), colour = NA)
+    )
+}
+
+# Save plots to PLOT_DIR and CSVs to CSV_DIR, with the dataset name as prefix
+save_outputs <- function(name, plot, plot_df, top_pg_table) {
+  plot_prefix <- file.path(PLOT_DIR, name)
+  csv_prefix  <- file.path(CSV_DIR,  name)
+
+  ggsave(filename = paste0(plot_prefix, "_PPS_Dispersion_Comparison.tif"),
+         plot = plot, dpi = 300,
+         width = 5, height = 4, units = "in",  # 1500 x 1200 px at 300 dpi
+         device = "tiff", compression = "lzw", type = "cairo", bg = "white")
+
+  ggsave(filename = paste0(plot_prefix, "_PPS_Dispersion_Comparison.jpg"),
+         plot = plot, dpi = 300,
+         width = 5, height = 4, units = "in",
+         device = "jpeg", quality = 100, type = "cairo", bg = "white")
+
+  write.csv(top_pg_table, paste0(csv_prefix, "_top", TOP_N, "_PGs.csv"), row.names = FALSE)
+  write.csv(plot_df,      paste0(csv_prefix, "_plot_data.csv"),          row.names = FALSE)
+}
+```
+
+# Run all datasets
+```{r run-all}
+# Check all gene score files exist before starting
+missing <- datasets[!file.exists(gene_score_path(datasets))]
+if (length(missing)) {
+  stop("Missing gene score files in ", GENE_DIR, " for: ", paste(missing, collapse = ", "),
+       "\nRun Extract_Principal_Genes_and_HVGs.Rmd first.")
+}
+
+for (d in c(CSV_DIR, PLOT_DIR)) dir.create(d, recursive = TRUE, showWarnings = FALSE)
+
+results <- character(0)
+
+for (name in datasets) {
+  results[name] <- tryCatch({
+    gs           <- read_gene_scores(name)
+    scores       <- load_scores(gs)
+    plot_df      <- build_plot_df(scores, gs$Gene)
+    top_pg_table <- build_top_pg_table(scores)
+    p            <- make_plot(plot_df, show_legend = name %in% LEGEND_DATASETS)
+    print(p)
+    save_outputs(name, p, plot_df, top_pg_table)
+    "success"
+  }, error = function(e) conditionMessage(e))
+}
+
+# Summary
+failed <- results[results != "success"]
+if (length(failed)) {
+  message("Failed datasets:")
+  for (n in names(failed)) message("  ", n, ": ", failed[[n]])
+} else {
+  message("All ", length(results), " datasets completed.")
+}
+```

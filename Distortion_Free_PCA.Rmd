@@ -1,0 +1,300 @@
+---
+title: "Distortion_Free_PCA"
+output: html_document
+date: "2026-04-09"
+---
+
+```{r setup, include=FALSE}
+########### DISCLAIMER: AI USED TO AID WITH PLOT FORMATTING FOR PRESENTATION PURPOSES ###############
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  dpi = 300,
+  fig.width = 5,   # 1500 pixels / 300 dpi
+  fig.height = 4   # 1200 pixels / 300 dpi
+)
+```
+
+# Install and load R packages
+```{r install-packages}
+pkgs <- c("here", "ggplot2", "dplyr", "tidyr", "stringr", "Seurat", "irlba")
+to_install <- setdiff(pkgs, rownames(installed.packages()))
+if (length(to_install)) {
+  install.packages(to_install)
+}
+for (p in pkgs) library(p, character.only = TRUE)
+```
+
+# Constants
+```{r constants}
+OUT_DIR <- here("Distortion_Free_PCA")
+dir.create(OUT_DIR, recursive = TRUE, showWarnings = FALSE)
+
+FONT_FAMILY <- "Arial"
+PLOT_DPI    <- 300
+PLOT_WIDTH  <- 5   # inches (1500 x 1200 px at 300 dpi)
+PLOT_HEIGHT <- 4
+
+LOADING_PCS <- paste0("PC", 1:6)  # PCs that get a loading histogram
+VIOLIN_N    <- 9                  # top PC1 genes in the violin plot
+VIOLIN_NCOL <- 3                  # panels per row (3 x 3 grid)
+```
+
+# Plot saving helper
+```{r save-helper}
+# Save a plot as both LZW TIFF and JPEG (file_stub = path without extension)
+save_plot_both <- function(plot, file_stub, width = PLOT_WIDTH, height = PLOT_HEIGHT) {
+  ggsave(filename = paste0(file_stub, ".tif"), plot = plot, dpi = PLOT_DPI,
+         width = width, height = height, units = "in",
+         device = "tiff", compression = "lzw", type = "cairo", bg = "white")
+  ggsave(filename = paste0(file_stub, ".jpg"), plot = plot, dpi = PLOT_DPI,
+         width = width, height = height, units = "in",
+         device = "jpeg", quality = 100, type = "cairo", bg = "white")
+}
+```
+
+# OPTIMAL PC SELECTION ALGO
+```{r quick-elbow}
+quick.elbow <- function(varpc,low=.08,max.pc=.9) {
+  ee <- varpc/sum(varpc) #proportinal eigenvalues
+  while(low>=max(ee)) { low <- low/2 } #when no principal component eigenvalues are large enough, cut low in half
+  lowie <- (ee<low) ; highie <- ee>low/8
+  low.ones <- which(lowie & highie)
+  others <- length(which(!lowie))
+  if(length(low.ones)>0) {
+    if(length(low.ones)==1) {
+      elbow <- low.ones
+    } else {
+      set <- ee[low.ones]
+      pc.drops <- abs(diff(set))/(set[1:(length(set)-1)])
+      infz <- is.infinite(pc.drops)
+      #print(pc.drops)
+      elbow <- which(pc.drops==max(pc.drops[!infz],na.rm=T))[1]+others
+    }
+  } else {
+    # if somehow there are no small eigenvalues, just choose the elbow as the second last
+    cat("no eigenvalues were significantly smaller than the previous\n")
+    elbow <- length(ee)
+  }
+  if(tail(cumsum(ee[1:elbow]),1)>max.pc) {
+    elbow <- which(cumsum(ee)>max.pc)[1]-1
+  }
+  if(elbow<1) {
+    warning("elbow calculation failed, return zero")
+    return(0)
+  }
+  elbow<-elbow + 1 # include last to be sure ..
+  names(elbow) <- NULL
+  return(elbow)
+}
+```
+
+# GENES FILTERING
+```{r gene-filter}
+genes_filter <- function(df, filters = c("IgFilter", "TrFilter", "riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter")) {
+  #ensure gene names are uppercase for consistent matching
+  geneNames <- toupper(rownames(df))
+  GenesToFilterOut <- integer(0)
+  if(is.null(filters)){
+    return(df)
+  }
+
+  #immunoglobulin genes (IGHV, IGKV)
+  if ("IgFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "IGHV") | str_starts(geneNames, "IGKV"))
+    )
+  }
+
+  #t-cell receptor genes (TRAV, TRBV)
+  if ("TrFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "TRAV") | str_starts(geneNames, "TRBV"))
+    )
+  }
+
+  #ribosomal genes (RPL, RPS)
+  if ("riboFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "RPL") | str_starts(geneNames, "RPS"))
+    )
+  }
+
+  #mitochondrial genes (MT-)
+  if ("mtFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "MT-"))
+    )
+  }
+
+  #GM-prefixed genes
+  if ("gmFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "GM"))
+    )
+  }
+
+  #genes ending with RIK
+  if ("rikFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_ends(geneNames, "RIK"))
+    )
+  }
+
+  #genes starting with "\\.", ENSG, or a regex pattern like XX000000
+  if ("dotFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(
+        str_starts(geneNames, "\\.") |
+        str_starts(geneNames, "ENSG") |
+        str_detect(geneNames, "^[A-Z]{2}\\d{6}")
+      )
+    )
+  }
+
+  #remove duplicate indices
+  GenesToFilterOut <- unique(GenesToFilterOut)
+
+  #return filtered dataframe
+  if (length(GenesToFilterOut) > 0) {
+    filtered_df <- df[-GenesToFilterOut, , drop = FALSE]
+  } else {
+    filtered_df <- df  # No genes to filter, return original
+  }
+
+  list(
+    counts=filtered_df,
+    filtered=setdiff(rownames(df), rownames(filtered_df))
+  )
+}
+```
+
+# Z-score Normalize
+```{r z-score-norm}
+zscore_normalise <- function(count_matrix, epsilon = 1e-10) {
+  row_means <- rowMeans(count_matrix)
+  row_sds   <- apply(count_matrix, 1, sd)
+  # Guard against zero-variance genes
+  row_sds[row_sds < epsilon] <- epsilon
+  normalised <- sweep(count_matrix, 1, row_means, FUN = "-")
+  normalised <- sweep(normalised,   1, row_sds,   FUN = "/")
+  return(normalised)
+}
+```
+
+# PRINCIPAL GENES ALGO
+```{r main-algo}
+input_file<-paste0(here(), "/Filtered_Input/PBMCs_Counts.csv")
+truth_file<-paste0(here(), "/Filtered_Input/PBMCs_Labels.csv")
+name<-"PBMCs"
+
+raw_counts<-read.csv(input_file, check.names = FALSE, row.names = 1)  # kept for the violin plot
+data<-raw_counts
+
+pcs <- 10
+cut <- 1
+filters <- c("riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter")
+
+  message(length(rownames(data)), ", ", length(colnames(data)))
+  message(paste0(filters))
+  if (is.null(data)) {
+    stop("Error: 'data' must be provided.")
+  }
+
+  if(cut == -1){
+    cut = 0.25
+  }
+  
+  message("filtering genes based on specifications")
+  data<-genes_filter(data, filters)
+  filtered_genes<-data$filtered
+  data<-data$counts
+  message("Post Filtering Dataset Dimensions: Rows: ", length(rownames(data)), ", Columns: ", length(colnames(data)))
+  
+  zero_cols<-which(colSums(data) == 0)
+  zero_var_rows <- apply(data, 1, var, na.rm = TRUE) == 0
+  zero_var_rows<-which(zero_var_rows)
+
+  message("Remove zero rows and remove zero columns until none are left")
+  while(length(zero_cols) != 0 || length(zero_var_rows)!=0){
+    zero_cols<-which(colSums(data) == 0)
+    if(length(zero_cols) > 0) {
+      data<-data[, -zero_cols]
+    }
+    zero_var_rows <- apply(data, 1, var, na.rm = TRUE) == 0
+    zero_var_rows<-which(zero_var_rows)
+    if(length(zero_var_rows) > 0) {
+      data<-data[-zero_var_rows, ]
+    }
+    message("Dataset Dimensions after removing zero rows and columns: Rows: ", length(rownames(data)), ", Columns: ", length(colnames(data)))
+  }
+
+  message("Values set: pcs = ", pcs, ", chosen cutoff = ", cut)
+  
+  #Z-score normalization
+  data<-zscore_normalise(count_matrix=data)
+
+  #transpose the data to have genes as columns and cells as rows
+  set.seed(46)
+  rotated_output <- irlba::prcomp_irlba(t(data), n = pcs, retx = TRUE, center = FALSE, scale. = FALSE)
+  
+  summary<- summary(rotated_output)
+  loadings <- as.data.frame(rotated_output$rotation)
+  rownames(loadings) <- rownames(data) # Associate gene names with loadings
+```
+
+# PC loading distributions
+```{r loading-histograms}
+loadings_long <- loadings[, LOADING_PCS] %>%
+  pivot_longer(cols = everything(), names_to = "PC", values_to = "loading") %>%
+  mutate(PC = factor(PC, levels = LOADING_PCS))
+
+for (pc in LOADING_PCS) {
+  pc_data <- loadings_long %>% filter(PC == pc)
+
+  p <- ggplot(pc_data, aes(x = loading, y = after_stat(density))) +
+    geom_histogram(bins = 50, fill = "steelblue", color = NA, alpha = 0.7) +
+    geom_density(color = "firebrick", linewidth = 0.5) +
+    scale_x_continuous(labels = scales::scientific) +
+    labs(x = "Loading Score", y = "Density", title = NULL) +
+    theme_bw(base_size = 10, base_family = FONT_FAMILY) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7))
+
+  print(p)
+  save_plot_both(p, file.path(OUT_DIR, paste0(name, pc, "_loading_dist")))
+}
+```
+
+# Violin plot of top PC1 genes
+```{r pc1-violin}
+# Top genes by absolute PC1 loading (PC sign is arbitrary)
+pc1_loadings  <- setNames(loadings$PC1, rownames(loadings))
+top_pc1_genes <- names(head(sort(abs(pc1_loadings), decreasing = TRUE), VIOLIN_N))
+message("Top ", VIOLIN_N, " PC1 genes (signed loading):\n  ",
+        paste(sprintf("%s (%.4f)", top_pc1_genes, pc1_loadings[top_pc1_genes]), collapse = "\n  "))
+
+# Log-normalize the full raw count matrix with Seurat
+seurat_obj <- CreateSeuratObject(counts = as.matrix(raw_counts))
+Idents(seurat_obj) <- "All_Cells"
+seurat_obj <- NormalizeData(seurat_obj)
+
+# Seurat stores features with "-" instead of "_"
+features <- gsub("_", "-", top_pc1_genes)
+
+violin_plot <- VlnPlot(seurat_obj, features = features, ncol = VIOLIN_NCOL, pt.size = 0) &
+  theme(text            = element_text(family = FONT_FAMILY),
+        axis.text.x     = element_blank(),
+        axis.title.x    = element_blank(),
+        axis.title.y    = element_blank(),
+        legend.position = "none")
+
+violin_plot
+save_plot_both(violin_plot, file.path(OUT_DIR, paste0(name, "_Top", VIOLIN_N, "_PC1_Genes_Violin_Plot")))
+```

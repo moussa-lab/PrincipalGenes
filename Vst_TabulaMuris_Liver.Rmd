@@ -1,0 +1,466 @@
+---
+title: "Vst_TabulaMuris_Liver"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+########### DISCLAIMER: AI USED TO AID WITH PLOT FORMATTING FOR PRESENTATION PURPOSES ###############
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  dpi = 300,
+  fig.width = 5,   # 1500 pixels / 300 dpi
+  fig.height = 4   # 1200 pixels / 300 dpi
+)
+```
+
+# Install and load R packages
+```{r install-packages}
+pkgs <- c("here", "ggplot2", "dplyr", "tidyr", "Seurat", "skmeans", "mclust")
+to_install <- setdiff(pkgs, rownames(installed.packages()))
+if (length(to_install)) {
+  install.packages(to_install)
+}
+for (p in pkgs) library(p, character.only = TRUE)
+```
+
+# Global Library
+```{r source}
+source(here("Principal_Genes.R"))
+source(here("clSensitivity.R"))
+```
+
+# Constants
+```{r constants}
+name <- "TabulaMuris_Liver"
+
+COUNTS_FILE <- here("Filtered_Input", "TabulaMuris_Liver_Counts.csv")
+LABELS_FILE <- here("Filtered_Input", "TabulaMuris_Liver_Labels.csv")
+
+CSV_DIR  <- here("Data_Hold", "VST_Tabula_Muris")  # output CSVs
+PLOT_DIR <- here("Vst_TabulaMuris_Liver")          # output plots
+for (d in c(CSV_DIR, PLOT_DIR)) dir.create(d, recursive = TRUE, showWarnings = FALSE)
+
+# Plot appearance
+FONT_FAMILY     <- "Arial"
+BASE_SIZE       <- 10
+PLOT_DPI        <- 300
+PLOT_WIDTH      <- 5   # inches (1500 x 1200 px at 300 dpi)
+PLOT_HEIGHT     <- 4
+LEGEND_POSITION <- c(1, 0)  # bottom-left, inside the panel
+
+COL_PG    <- "#1BB7D8"
+COL_HVG   <- "#E55B1E"
+COL_UNION <- "#2C9F45"
+
+X_LABEL      <- "Cumulative GPS (%)"
+Y_LABEL_SENS <- "Clustering Sensitivity"
+Y_LABEL_ARI  <- "Adjusted Rand Index"
+
+# Violin plots
+VIOLIN_N       <- 9
+VIOLIN_NCOL    <- 3
+VIOLIN_PT_SIZE <- 0
+```
+
+# Helpers
+```{r helpers}
+# Save a plot as both LZW TIFF and JPEG (file_stub = path without extension)
+save_plot_both <- function(plot, file_stub, width = PLOT_WIDTH, height = PLOT_HEIGHT) {
+  ggsave(filename = paste0(file_stub, ".tif"), plot = plot, dpi = PLOT_DPI,
+         width = width, height = height, units = "in",
+         device = "tiff", compression = "lzw", type = "cairo", bg = "white")
+  ggsave(filename = paste0(file_stub, ".jpg"), plot = plot, dpi = PLOT_DPI,
+         width = width, height = height, units = "in",
+         device = "jpeg", quality = 100, type = "cairo", bg = "white")
+}
+
+# PG / HVG / Union metric vs threshold, with gene-count labels.
+# cols = c(PG column, HVG column, Union column) in points_df
+make_metric_plot <- function(points_df, cols, y_label) {
+  plot_df <- points_df %>%
+    pivot_longer(cols = all_of(cols), names_to = "metric", values_to = "value")
+  plot_df$metric <- factor(plot_df$metric, levels = cols)
+
+  plot_df$label_val <- NA
+  is_pg    <- plot_df$metric == cols[1]
+  is_union <- plot_df$metric == cols[3]
+  plot_df$label_val[is_pg]    <- plot_df$num_genes[is_pg]
+  plot_df$label_val[is_union] <- plot_df$union_num_genes[is_union]
+
+  ggplot(plot_df, aes(x = thresholds, y = value, color = metric)) +
+    geom_point(size = 2) +
+    # PG labels
+    geom_text(
+      data = plot_df[is_pg, ],
+      aes(label = label_val),
+      color = COL_PG, vjust = +2, size = 3, family = FONT_FAMILY,
+      check_overlap = TRUE, show.legend = FALSE
+    ) +
+    # Union labels
+    geom_text(
+      data = plot_df[is_union, ],
+      aes(label = label_val),
+      color = "darkgreen", vjust = -2, size = 3, family = FONT_FAMILY,
+      check_overlap = TRUE, show.legend = FALSE
+    ) +
+    geom_smooth(
+      method = "loess", formula = y ~ x,
+      method.args = list(span = 1, degree = 1, surface = "direct"),
+      se = FALSE
+    ) +
+    scale_y_continuous(limits = c(0, 1)) +
+    labs(x = X_LABEL, y = y_label, title = NULL) +
+    scale_color_manual(
+      breaks = cols,
+      values = setNames(c(COL_PG, COL_HVG, COL_UNION), cols),
+      labels = setNames(c("Principal Genes", "Seurat's HVG", "HVG_PG_Union"), cols)
+    ) +
+    theme_minimal(base_size = BASE_SIZE, base_family = FONT_FAMILY) +
+    theme(
+      legend.position             = "inside",
+      legend.position.inside      = LEGEND_POSITION,
+      legend.justification.inside = LEGEND_POSITION,
+      legend.box.margin           = margin(4, 4, 4, 4),
+      legend.title                = element_blank(),
+      legend.background           = element_rect(fill = alpha("white", 0.8), colour = NA)
+    )
+}
+
+# Violin plot of the first VIOLIN_N genes of a set; Seurat stores "_" as "-"
+make_violin <- function(seurat_obj, genes, file_suffix) {
+  features <- gsub("_", "-", head(genes, VIOLIN_N))
+  features <- features[features %in% rownames(seurat_obj)]
+  if (!length(features)) {
+    message(file_suffix, ": no genes to plot; skipped")
+    return(invisible(NULL))
+  }
+  p <- VlnPlot(seurat_obj, features = features, ncol = VIOLIN_NCOL, pt.size = VIOLIN_PT_SIZE) &
+    theme(text            = element_text(family = FONT_FAMILY),
+          axis.title.x    = element_blank(),
+          axis.text.x     = element_blank(),
+          axis.title.y    = element_blank(),
+          legend.position = "none")
+  print(p)
+  save_plot_both(p, file.path(PLOT_DIR, paste0(name, "_", file_suffix)))
+}
+```
+
+# TABULA_MURIS_LIVER
+
+## Load data and true labels
+```{r load-data}
+count_matrix <- read.csv(COUNTS_FILE, check.names = FALSE, row.names = 1)
+colnames(count_matrix) <- gsub("\\.", "-", colnames(count_matrix))
+
+full_true_labels <- read.csv(LABELS_FILE, check.names = FALSE)
+full_true_labels$cell <- gsub("\\.", "-", full_true_labels$cell)
+
+# One label per count-matrix column, in column order (all clustering uses count_matrix)
+cells <- colnames(count_matrix)
+idx   <- match(cells, full_true_labels$cell)
+if (anyNA(idx)) stop(sum(is.na(idx)), " cells in the count matrix have no label in ", LABELS_FILE)
+
+label_levels <- unique(full_true_labels$label[full_true_labels$cell %in% cells])
+true_labels_vector <- setNames(
+  as.numeric(factor(full_true_labels$label[idx], levels = label_levels)),
+  cells
+)
+k_cls <- max(true_labels_vector)
+message(length(true_labels_vector), " cells, ", k_cls, " true clusters")
+```
+
+## Get principal genes
+```{r principal-genes}
+set.seed(12345)
+principal_genes_results <- principalgenes(count_matrix, cut = 1, filters=c("riboFilter", "mtFilter", "gmFilter", "rikFilter"))
+filtered_counts<-principal_genes_results$count_matrix
+top_100_genes<-names(principal_genes_results$top_genes[1:50])
+```
+
+## SK_MEANS CLUSTERING USING CUMULATIVE SCORE
+```{r skmeans-pg}
+thresholds <- seq(10, 50, by = 2)
+
+selectedGeneList <- list()
+current_gene_list <- list()
+currentpropsum <- 0
+threshold_index <- 1
+
+for(i in seq_along(principal_genes_results$top_genes)){
+  
+  current_gene_list <- append(current_gene_list, principal_genes_results$top_genes[i])
+  
+  currentpropsum <- currentpropsum + principal_genes_results$top_genes[i] * 100
+  
+  if(currentpropsum >= thresholds[threshold_index]){
+    selectedGeneList[[threshold_index]] <- current_gene_list
+    
+    print(paste("Threshold", thresholds[threshold_index], "reached at index", i))
+    
+    threshold_index <- threshold_index + 1
+    
+    if(threshold_index > length(thresholds)){
+      break
+    }
+  }
+}
+
+num_genes <- list()
+for (i in seq_along(selectedGeneList)){
+  num_genes[[i]]<-length(selectedGeneList[[i]])
+}
+num_genes<-unlist(num_genes)
+
+sumprop<- 0
+for (i in seq_along(principal_genes_results$top_genes)){
+  sumprop <- sumprop + principal_genes_results$top_genes[i]*100
+}
+
+PG_groups_sk <- list()
+PG_clustering_sk <- list()
+PG_results_sk <-list()
+PG_clustering_sens_sk<-list()
+seeds<-c(12345, 54672, 44182, 72198, 98230)
+
+for (i in 1:length(seeds)){
+  print(paste("seed:", seeds[i]))
+  for (j in 1:length(selectedGeneList)){
+    set.seed(seeds[i])
+    submat<-count_matrix[names(selectedGeneList[[j]]),]
+    PG_groups_sk[[j]]<-skmeans(x = t(log2(submat + 1)) , k = k_cls, control = list(verbose = FALSE))$cluster
+    print(paste0(j, "th clustering done"))
+  }
+  PG_clustering_sk[[i]]<-PG_groups_sk
+}
+
+for (i in 1:length(PG_clustering_sk)){
+  print(paste("seed:", i))
+  for (j in 1:length(selectedGeneList)){
+    PG_results_sk[[j]] <- clustSensitivity(PG_clustering_sk[[i]][[j]], true_labels_vector, as.character(1:k_cls))
+    print(paste("got clustering results:", j))
+  }
+  PG_clustering_sens_sk[[i]]<-PG_results_sk
+}
+```
+
+## SK_MEANS CLUSTERING USING HVGS
+```{r skmeans-hvg}
+set.seed(12345)
+seuratObject<- CreateSeuratObject(counts = as.matrix(count_matrix))
+norm_seuratObject <- NormalizeData(seuratObject)
+seuratObject<- FindVariableFeatures(norm_seuratObject, selection.method = "vst", nfeatures = length(principal_genes_results$top_genes)) #variance stabilized used as the metric here. some regression stuff is done that you need to look into.
+HVGs <- VariableFeatures(seuratObject) #Vector of descending order HVGs
+
+positions<-match(HVGs, seuratObject[["RNA"]]@meta.data$var.features)
+
+scored_hvg<- seuratObject[["RNA"]]@meta.data$vf_vst_counts_variance.standardized[positions]
+names(scored_hvg) <- HVGs
+scored_hvg[is.na(scored_hvg)] <- 0
+scored_hvg <- sort(decreasing = TRUE, scored_hvg)
+
+commongenes<-intersect(names(principal_genes_results$top_genes), names(scored_hvg))
+
+# SKmeans clustering
+HVG_groups_sk <- list()
+HVG_clustering_sk <- list()
+HVG_results_sk <- list()
+HVG_clustering_sens_sk <- list()
+
+for(i in 1:length(seeds)){
+  print(paste("seed:", seeds[i]))
+  for(j in seq_along(num_genes)){
+    set.seed(seeds[i])
+    submat<-count_matrix[HVGs[1:min(length(HVGs),as.numeric(num_genes[j]))], ]
+    HVG_groups_sk[[j]]<-skmeans(x = t(log2(submat + 1)) , k = k_cls, control = list(verbose = FALSE))$cluster
+    print(paste0(j, "th clustering done"))
+  }
+  HVG_clustering_sk[[i]]<-HVG_groups_sk
+}
+
+for (i in 1:length(seeds)){
+  for (j in seq_along(num_genes)){
+    HVG_results_sk[[j]] <- clustSensitivity(HVG_clustering_sk[[i]][[j]], true_labels_vector, as.character(1:k_cls))
+  }
+  HVG_clustering_sens_sk[[i]]<-HVG_results_sk
+}
+```
+
+## SK MEANS CLUSTERING USING UNION OF HVGS AND Principal Genes AT EACH POINT
+```{r skmeans-union}
+pg_hvg_union<-list()
+
+for(i in seq_along(selectedGeneList)){
+  pg_hvg_union[[i]]<-unique(union(names(selectedGeneList[[i]]), HVGs[1:length(selectedGeneList[[i]])]))
+}
+
+Union_groups_sk <- list()
+Union_clustering_sk<-list()
+Union_results_sk <-list()
+Union_clustering_sens_sk<-list()
+
+for(i in 1:length(seeds)){
+  print(paste("seed:", seeds[i]))
+  for(j in 1:length(selectedGeneList)){
+    set.seed(seeds[i])
+    submat<-count_matrix[pg_hvg_union[[j]],]
+    Union_groups_sk[[j]]<-skmeans(x = t(log2(submat + 1)) , k = k_cls, control = list(verbose = FALSE))$cluster
+    print(paste0(j, "th clustering done"))
+  }
+  Union_clustering_sk[[i]]<-Union_groups_sk
+}
+
+for(i in 1:length(seeds)){
+  for (j in 1:length(selectedGeneList)){
+    Union_results_sk[[j]] <- clustSensitivity(Union_clustering_sk[[i]][[j]], true_labels_vector, as.character(1:k_cls))
+  }
+  Union_clustering_sens_sk[[i]]<-Union_results_sk
+}
+```
+
+## PLOT CLUSTERING RESULTS COMPARING HVGS AND CUMULATIVE SCORE
+```{r plot-results}
+RowNames <- list()
+pg_points_sk <- list()
+hvg_points_sk <- list()
+union_points_sk<-list()
+
+for(i in 1: length(num_genes)){
+  sens_sum=0
+  for(j in 1:length(PG_clustering_sens_sk)){
+    sens_sum = sens_sum + as.numeric(PG_clustering_sens_sk[[j]][[i]][1,2])
+  }
+  pg_points_sk[[i]] <- sens_sum/as.numeric(length(PG_clustering_sens_sk))
+  RowNames[[i]] <- i
+}
+
+for(i in 1: length(num_genes)){
+  sens_sum=0
+  for(j in 1:length(HVG_clustering_sens_sk)){
+    sens_sum = sens_sum + as.numeric(HVG_clustering_sens_sk[[j]][[i]][1,2])
+  }
+  hvg_points_sk[[i]] <- sens_sum/as.numeric(length(HVG_clustering_sens_sk))
+}
+
+for(i in 1: length(num_genes)){
+  sens_sum=0
+  for(j in 1:length(Union_clustering_sens_sk)){
+    sens_sum = sens_sum + as.numeric(Union_clustering_sens_sk[[j]][[i]][1,2])
+  }
+  union_points_sk[[i]] <- sens_sum/as.numeric(length(Union_clustering_sens_sk))
+}
+
+sens_points <- data.frame(
+  row.names = unlist(RowNames),
+  PG_sensitivity=as.numeric(unlist(pg_points_sk)),
+  HVG_sensitivity = as.numeric(unlist(hvg_points_sk)),
+  PG_HVG_Union = as.numeric(unlist(union_points_sk)),
+  thresholds =as.numeric(thresholds),
+  num_genes = as.integer(num_genes),
+  union_num_genes = as.integer(sapply(pg_hvg_union, length))
+)
+write.csv(sens_points, file.path(CSV_DIR, paste0(name, "_SKM_accuracy_results.csv")))
+
+sens_plot <- make_metric_plot(sens_points,
+                              c("PG_sensitivity", "HVG_sensitivity", "PG_HVG_Union"),
+                              Y_LABEL_SENS)
+print(sens_plot)
+save_plot_both(sens_plot, file.path(PLOT_DIR, paste0(name, "_PG_HVG_UNION_Sensitivity")))
+
+#adjustedRandIndex
+pg_rand <- list()
+hvg_rand <- list()
+union_rand <- list()
+for(i in 1:length(num_genes)){
+  rand_sum_pg = 0; rand_sum_hvg = 0; rand_sum_union = 0
+  for(j in 1:length(seeds)){
+    rand_sum_pg    <- rand_sum_pg    + adjustedRandIndex(PG_clustering_sk[[j]][[i]],    true_labels_vector)
+    rand_sum_hvg   <- rand_sum_hvg   + adjustedRandIndex(HVG_clustering_sk[[j]][[i]],   true_labels_vector)
+    rand_sum_union <- rand_sum_union + adjustedRandIndex(Union_clustering_sk[[j]][[i]], true_labels_vector)
+  }
+  pg_rand[[i]]    <- rand_sum_pg    / length(seeds)
+  hvg_rand[[i]]   <- rand_sum_hvg   / length(seeds)
+  union_rand[[i]] <- rand_sum_union / length(seeds)
+}
+
+rand_points <- data.frame(
+  row.names = unlist(RowNames),
+  PG_randIndex=as.numeric(unlist(pg_rand)),
+  HVG_randIndex = as.numeric(unlist(hvg_rand)),
+  PG_HVG_UnionRand = as.numeric(unlist(union_rand)),
+  thresholds =as.numeric(thresholds),
+  num_genes = as.integer(num_genes),
+  union_num_genes = as.integer(sapply(pg_hvg_union, length))
+)
+write.csv(rand_points, file.path(CSV_DIR, paste0(name, "_SKM_rand_index_results.csv")))
+
+rand_plot <- make_metric_plot(rand_points,
+                              c("PG_randIndex", "HVG_randIndex", "PG_HVG_UnionRand"),
+                              Y_LABEL_ARI)
+print(rand_plot)
+save_plot_both(rand_plot, file.path(PLOT_DIR, paste0(name, "_PG_HVG_UNION_RandIndex")))
+```
+
+## PRINCIPAL GENES AND HVGS COMPARISON
+```{r pg-hvg-comparison}
+#Common genes between TOP 100 Principal Genes results and Highly Variable Genes
+common_gene_names<- intersect(names(principal_genes_results$top_genes[1:100]), names(scored_hvg[1:100]))
+pg_only_gene_names <- setdiff(names(principal_genes_results$top_genes[1:100]), common_gene_names)
+hvg_only_gene_names <-setdiff(names(scored_hvg[1:100]), common_gene_names)
+
+#Ranks of Principal Genes based on scores
+pps_ranks <- rank(-as.numeric(principal_genes_results$top_genes))
+names(pps_ranks) <- names(principal_genes_results$top_genes)
+
+#Ranks of HVGs based on scaled dispersion score
+hvg_ranks <- rank(-as.numeric(scored_hvg))
+names(hvg_ranks) <- names(scored_hvg)
+
+#Variance of each gene
+variance_values <- apply(count_matrix, 1, var, na.rm = TRUE)
+variance_values <- sort(decreasing = TRUE, variance_values)
+
+#Mean expression of each gene
+mean_values <- apply(count_matrix, 1, mean, na.rm = TRUE)
+mean_values <- sort(decreasing = TRUE, mean_values)
+
+#Compare the ranks of intersecting genes
+intersect_df <- data.frame(
+  PPS_rank = pps_ranks[common_gene_names],
+  HVG_rank = hvg_ranks[common_gene_names],
+  Variance = round(variance_values[common_gene_names], 4),
+  Mean = round(mean_values[common_gene_names], 4)
+)
+
+#Compare the scores of the top100 Principal Genes to their rank in the top 100 HVGs and their mean and variance scores
+raw_scores_df <- data.frame(
+  PPS_score_percent = principal_genes_results$top_genes[1:100]*100,
+  HVG_rank = hvg_ranks[names(principal_genes_results$top_genes[1:100])],
+  Variance = round(variance_values[names(principal_genes_results$top_genes[1:100])], 4),
+  Mean = round(mean_values[names(principal_genes_results$top_genes[1:100])], 4)
+)
+
+write.csv(intersect_df,  file.path(CSV_DIR, paste0(name, "_PPS_HVG_Variance_Mean_Intersect.csv")))
+write.csv(raw_scores_df, file.path(CSV_DIR, paste0(name, "_PPS_HVG_Variance_Mean_Top100.csv")))
+```
+
+## FINAL PLOTS FROM HVG-only genes and PPS-only genes
+```{r violin-plots}
+Idents(norm_seuratObject) <- "All_Cells"
+
+violin_sets <- list(
+  PG_Only_Violin_Plot           = pg_only_gene_names,
+  HVG_Only_Violin_Plot          = hvg_only_gene_names,
+  PG_HVG_INTERSECT_Violin_Plot  = common_gene_names
+)
+
+for (suffix in names(violin_sets)) {
+  tryCatch(
+    make_violin(norm_seuratObject, violin_sets[[suffix]], suffix),
+    error = function(e) message(suffix, " failed: ", e$message)
+  )
+}
+```

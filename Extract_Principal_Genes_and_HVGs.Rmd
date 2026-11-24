@@ -1,0 +1,253 @@
+---
+title: "Extract_Principal_Genes_and_HVGs.Rmd"
+output: html_document
+---
+
+# Install and load R packages
+```{r install-packages}
+########### DISCLAIMER: AI USED TO AID WITH PLOT FORMATTING FOR PRESENTATION PURPOSES ###############
+
+pkgs <- c("here", "ggplot2", "dplyr", "Seurat", "tidyr", "ggrepel", "stringr")
+to_install <- setdiff(pkgs, rownames(installed.packages()))
+if (length(to_install)) {
+  install.packages(to_install)
+}
+
+for (p in pkgs) library(p, character.only = TRUE)
+```
+
+```{r setup, message=FALSE, warning=FALSE}
+library(here)
+library(Seurat)
+library(ggplot2)
+
+source(here("Principal_Genes.R"))  # immutable base script
+
+INPUT_DIR <- here("Filtered_Input")
+DATA_DIR  <- here("Data_Hold")
+PCA_DIR   <- here("PCA_Plots")
+PC_DIR    <- file.path(DATA_DIR, "PCA_Coordinates")
+GENE_DIR  <- file.path(DATA_DIR, "Gene_Scores")
+for (d in c(DATA_DIR, PCA_DIR, PC_DIR, GENE_DIR)) dir.create(d, recursive = TRUE, showWarnings = FALSE)
+
+PLOT_DPI    <- 300
+PCA_WIDTH  <- 5
+PCA_HEIGHT <- 4
+
+HVG_METHOD <- "dispersion"
+PG_CUT     <- 1
+PG_FILTER  <- c("riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter")
+SEED       <- 12345
+
+LABEL_PALETTE <- c(
+  "#E41A1C", "#377EB8", "#4DAF4A", "#984EA3",
+  "#FF7F00", "#FFFF33", "#A65628", "#F781BF",
+  "#999999", "#66C2A5", "#FC8D62", "#8DA0CB",
+  "#E78AC3", "#A6D854", "#FFD92F", "#E5C494"
+)
+
+datasets <- c(
+    Azimuth_MMC                = "Azimuth_MMC_Counts.csv"  # first entry: don't comment out
+  , Human_Intestines           = "Human_Intestines_subset_counts.csv"
+  , Mouse_Heart                = "Mouse_Heart_subset_counts.csv"
+  , PBMCs                      = "PBMCs_Counts.csv"
+  , TabulaMuris_Liver          = "TabulaMuris_Liver_Counts.csv"
+  , Human_CRC                  = "Human_CRC_subset_counts.csv"
+  , Human_Primary_Motor_Cortex = "Human_Primary_Motor_Cortex.csv"
+  , PBMC12K                    = "PBMC12K_Counts.csv"
+  , Pollen                     = "Pollen_TPM_Matrix.csv"
+  , TabulaMuris_Lung           = "TabulaMuris_Lung_Counts.csv"
+)
+
+LEGEND_DATASETS <- c(
+    "TabulaMuris_Lung"
+  , "TabulaMuris_Liver"
+  , "Human_Primary_Motor_Cortex"
+  , "Human_Intestines"
+  , "PBMC12K"
+)
+
+# Ground-truth label files (all in INPUT_DIR)
+LABEL_FILES <- c(
+    PBMCs                      = "PBMCs_Labels.csv"
+  , TabulaMuris_Liver          = "TabulaMuris_Liver_Labels.csv"
+  , Azimuth_MMC                = "Azimuth_MMC_Labels.csv"
+  , Human_Primary_Motor_Cortex = "Human_Primary_Motor_CortexLabels.csv"
+  , TabulaMuris_Lung           = "TabulaMuris_Lung_Labels.csv"
+  , Pollen                     = "Pollen_Labels.csv"
+)
+
+# Datasets that also get an extra Principal Genes run with no gene-name filtering
+NO_FILTER_DATASETS <- c("PBMCs", "Pollen")
+```
+
+```{r helpers}
+# Save a plot as both LZW TIFF and JPEG (file_stub = path without extension)
+save_plot_both <- function(plot, file_stub, width = PCA_WIDTH, height = PCA_HEIGHT) {
+  ggsave(filename = paste0(file_stub, ".tif"), plot = plot, dpi = PLOT_DPI,
+         width = width, height = height, units = "in",
+         device = "tiff", compression = "lzw", type = "cairo", bg = "white")
+  ggsave(filename = paste0(file_stub, ".jpg"), plot = plot, dpi = PLOT_DPI,
+         width = width, height = height, units = "in",
+         device = "jpeg", quality = 100, type = "cairo", bg = "white")
+}
+
+# Read counts with the same naming scheme used when the inputs were built
+read_counts <- function(file) {
+  cm <- read.csv(file.path(INPUT_DIR, file), row.names = 1, check.names = FALSE)
+  rownames(cm) <- gsub("-", "_", rownames(cm))
+  colnames(cm) <- gsub("\\.", "-", colnames(cm))
+  cm
+}
+
+# Seurat dispersion HVG scores
+get_hvg_scores <- function(counts) {
+  seurat_obj <- CreateSeuratObject(counts = as.matrix(counts))
+  Idents(seurat_obj) <- "All_Cells"
+  seurat_obj <- NormalizeData(seurat_obj)
+  seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = HVG_METHOD,
+                                     nfeatures = nrow(counts))
+  hvgs <- gsub("-", "_", VariableFeatures(seurat_obj))  # descending order HVGs
+  positions <- match(hvgs, rownames(counts))
+  scored_hvg <- seurat_obj[["RNA"]]@meta.data$vf_disp_data_mvp.dispersion[positions]
+  names(scored_hvg) <- hvgs
+  scored_hvg[is.na(scored_hvg)] <- 0
+  sort(scored_hvg, decreasing = TRUE)
+}
+
+# Per-gene table over ALL genes in the original matrix:
+# GPS, HVG dispersion (0 if not scored), mean & variance of log2(raw + 1)
+build_gene_scores <- function(pg, scored_hvg, counts) {
+  genes <- rownames(counts)                          # every gene in the original matrix
+  logc  <- log2(as.matrix(counts) + 1)
+  mu    <- rowMeans(logc)
+  v     <- rowSums((logc - mu)^2) / (ncol(logc) - 1)
+
+  gps <- unname(pg$top_genes[genes]); gps[is.na(gps)] <- 0   # filtered out by PG -> 0
+  hvg <- unname(scored_hvg[genes]);   hvg[is.na(hvg)] <- 0   # not scored by Seurat -> 0
+
+  out <- data.frame(
+    Gene           = genes,
+    GPS            = gps,
+    HVG_Dispersion = hvg,
+    Mean_Log2Expr  = unname(mu),
+    Var_Log2Expr   = unname(v)
+  )
+  out[order(out$GPS, decreasing = TRUE), ]
+}
+
+# Rebuild principalgenes' internal variance bar plot
+plot_pc_variance <- function(pg) {
+  eigenvalues <- (pg$rotated_output$sdev)^2
+  prop_var    <- eigenvalues / sum(eigenvalues)
+  temp_obj    <- data.frame(x = colnames(pg$rotated_output$rotation), y = prop_var)
+  ggplot(temp_obj, aes(x = x, y = y * 100)) +
+    geom_bar(stat = "identity", fill = "skyblue") +
+    geom_text(aes(label = round(y * 100, 2)), vjust = +1.5) +
+    labs(x = "Principal Component", y = "Proportion of Variance", title = NULL) +
+    theme_minimal() + theme(legend.position = "none")
+}
+
+# PC1/PC2 with ground-truth labels, aligned by cell name
+build_pca_df <- function(pg, truth_file) {
+  filtered_counts <- pg$count_matrix
+  pcs <- pg$rotated_output$x[, 1:2, drop = FALSE]
+  colnames(pcs) <- c("PC1", "PC2")
+  PC1_and_PC2 <- as.data.frame(pcs, row.names = colnames(filtered_counts))
+
+  full_true_labels <- read.csv(file.path(INPUT_DIR, truth_file))
+  full_true_labels$cell <- gsub("\\.", "-", full_true_labels$cell)
+  true_labels <- subset(full_true_labels, cell %in% colnames(filtered_counts))
+
+  idx <- match(rownames(PC1_and_PC2), full_true_labels$cell)
+  if (anyNA(idx)) warning(sum(is.na(idx)), " cells have no ground-truth label")
+
+  PC1_and_PC2$labels <- full_true_labels$label[idx]
+  PC1_and_PC2$numeric_labels <- as.numeric(factor(
+    PC1_and_PC2$labels,
+    levels = unique(true_labels$label)
+  ))
+  data.frame(cell = rownames(PC1_and_PC2), PC1_and_PC2, row.names = NULL)
+}
+
+plot_pca <- function(pca_df, show_legend) {
+  p <- ggplot(pca_df, aes(x = PC1, y = PC2, color = labels)) +
+    geom_point(size = 2, alpha = 0.8) +
+    scale_color_manual(
+      name   = "Label",
+      values = LABEL_PALETTE,
+      labels = function(x) str_wrap(x, width = 25)   # wrap long cell-type names
+    ) +
+    guides(color = guide_legend(
+      ncol = 3,
+      override.aes = list(size = 3, alpha = 1)       # keep legend dots readable
+    )) +
+    theme_minimal() +
+    theme(
+      legend.position = "bottom",
+      legend.title    = element_text(size = 8),
+      legend.text     = element_text(size = 7),
+      legend.key.size = unit(0.4, "cm")
+    ) +
+    labs(x = "PC1", y = "PC2", title = NULL)
+  p
+}
+```
+
+```{r run_all}
+for (prefix in names(datasets)) {
+  message("==================== ", prefix, " ====================")
+  tryCatch({
+    count_matrix <- read_counts(datasets[[prefix]])
+
+    # Principal Genes
+    set.seed(SEED)
+    pg <- principalgenes(count_matrix, cut = PG_CUT, filters = PG_FILTER)
+
+    # Seurat dispersion HVGs (original matrix, Seurat's own handling)
+    scored_hvg <- get_hvg_scores(count_matrix)
+
+    # Gene score CSV (all datasets)
+    gene_df <- build_gene_scores(pg, scored_hvg, count_matrix)
+    write.csv(gene_df, file.path(GENE_DIR, paste0(prefix, "_gene_scores.csv")),
+              row.names = FALSE)
+
+    # PC variance bar plot (all datasets)
+    save_plot_both(plot_pc_variance(pg),
+                   file.path(PCA_DIR, paste0(prefix, "_PC_Variance")))
+
+    # PCA coordinates + labelled PCA plot (ground-truth datasets only)
+    if (prefix %in% names(LABEL_FILES)) {
+      pca_df <- build_pca_df(pg, LABEL_FILES[[prefix]])
+      write.csv(pca_df, file.path(PC_DIR, paste0(prefix, "_PC1_PC2.csv")),
+                row.names = FALSE)
+      save_plot_both(plot_pca(pca_df, prefix %in% LEGEND_DATASETS),
+               file.path(PCA_DIR, paste0(prefix, "_PCA")),
+               width = PCA_WIDTH, height = PCA_HEIGHT)
+    }
+
+    # Extra run: Principal Genes with NO name filtering (gene scores only)
+    if (prefix %in% NO_FILTER_DATASETS) {
+      tryCatch({
+        message("  -> no-name-filtering Principal Genes run for ", prefix)
+        set.seed(SEED)
+        pg_nf <- principalgenes(count_matrix, cut = PG_CUT, filters = character(0))
+
+        # HVG scores don't depend on PG filters, so reuse scored_hvg
+        gene_df_nf <- build_gene_scores(pg_nf, scored_hvg, count_matrix)
+        write.csv(gene_df_nf,
+                  file.path(GENE_DIR, paste0("no_name_filtering_", prefix, "_gene_scores.csv")),
+                  row.names = FALSE)
+      }, error = function(e) {
+        message("FAILED (no-name-filtering run) on ", prefix, ": ", conditionMessage(e))
+      })
+    }
+  }, error = function(e) {
+    message("FAILED on ", prefix, ": ", conditionMessage(e))
+  })
+
+  rm(list = intersect(ls(), c("count_matrix", "pg", "scored_hvg", "gene_df", "pca_df",
+                              "pg_nf", "gene_df_nf")))
+  invisible(gc())
+}
+```

@@ -34,5 +34,3 @@ All scripts should be executed in the order they are listed below. Output figure
 - Data_Hold directories will contain several intermediary tables that can be used for downstream analysis and exploration.
 - Figures are primarily stored in the results directories.
 - Statistical_Tests will contain composite results for all datasets obtained when running Statistical_testing.Rmd
-
-create_directories.sh  run_Bootstrapping.sh  run_louvain_unsupervised.sh  run_no_name.sh  run_sens_ari.sh  run_statistical_testing.sh  run_timing.sh  run_vary_pcs.sh  run_vst.sh

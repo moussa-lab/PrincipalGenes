@@ -1,0 +1,253 @@
+---
+title: "Statistical_Testing"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+########### DISCLAIMER: AI USED TO AID WITH PLOT FORMATTING FOR PRESENTATION PURPOSES ###############
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  dpi = 300
+)
+```
+
+# Install and load R packages
+```{r install-packages}
+pkgs <- c("here", "ggplot2")
+to_install <- setdiff(pkgs, rownames(installed.packages()))
+if (length(to_install)) {
+  install.packages(to_install)
+}
+for (p in pkgs) library(p, character.only = TRUE)
+```
+
+# Constants
+```{r constants}
+GENE_DIR <- here("Data_Hold", "Gene_Scores")        # written by Extract_Principal_Genes_and_HVGs.Rmd
+CSV_DIR  <- here("Data_Hold", "Statistical_Tests")  # output CSVs
+PLOT_DIR <- here("Statistical_Tests")               # output plots
+for (d in c(CSV_DIR, PLOT_DIR)) dir.create(d, recursive = TRUE, showWarnings = FALSE)
+
+TOP_N <- 100
+
+boxplot_width  <- 7.5
+boxplot_height <- 5.25
+
+# key    = short name used in output column names
+# prefix = dataset prefix from the extraction Rmd
+# label  = display name in plots and tables
+DATASETS <- data.frame(
+  key    = c("azimuth", "pbmcs", "pollen", "braindata", "liver", "lung",
+             "crc", "intestines", "mouseheart", "pbmc12k"),
+  prefix = c("Azimuth_MMC", "PBMCs", "Pollen", "Human_Primary_Motor_Cortex",
+             "TabulaMuris_Liver", "TabulaMuris_Lung",
+             "Human_CRC", "Human_Intestines", "Mouse_Heart", "PBMC12K"),
+  label  = c("Azimuth MMC", "PBMCs", "Pollen", "HPMC",
+             "Tabula Muris Liver", "Tabula Muris Lung",
+             "Human CRC", "Human Intestines", "Mouse Heart", "PBMC12K"),
+  group  = c(rep("labeled", 6), rep("unlabeled", 4)),
+  stringsAsFactors = FALSE
+)
+
+LABELED   <- DATASETS$key[DATASETS$group == "labeled"]
+UNLABELED <- DATASETS$key[DATASETS$group == "unlabeled"]
+LABEL_OF  <- setNames(DATASETS$label, DATASETS$key)
+```
+
+# Load precomputed gene scores
+```{r load-gene-scores}
+gene_score_path <- function(prefix) {
+  file.path(GENE_DIR, paste0(prefix, "_gene_scores.csv"))
+}
+
+# 0 means "dropped by PG filters / not scored by Seurat" -> NA
+read_gene_scores <- function(prefix) {
+  gs <- read.csv(gene_score_path(prefix), check.names = FALSE, stringsAsFactors = FALSE)
+  gs$GPS[gs$GPS == 0]                       <- NA
+  gs$HVG_Dispersion[gs$HVG_Dispersion == 0] <- NA
+  gs
+}
+
+# Named vector of non-NA scores, sorted descending
+sorted_scores <- function(values, genes) {
+  keep <- !is.na(values)
+  sort(setNames(values[keep], genes[keep]), decreasing = TRUE)
+}
+
+# Everything this Rmd needs for one dataset
+load_dataset <- function(prefix, n = TOP_N) {
+  gs         <- read_gene_scores(prefix)
+  pg_scores  <- sorted_scores(gs$GPS,            gs$Gene)
+  hvg_scores <- sorted_scores(gs$HVG_Dispersion, gs$Gene)
+
+  pg_genes  <- names(head(pg_scores,  n))
+  hvg_genes <- names(head(hvg_scores, n))
+
+  list(
+    pg    = pg_genes,
+    hvg   = hvg_genes,
+    # Rank of each top PG within the full HVG ranking (NA if Seurat did not score it)
+    ranks = data.frame(
+      gene     = pg_genes,
+      PPS_rank = seq_along(pg_genes),
+      HVG_rank = match(pg_genes, names(hvg_scores))
+    ),
+    # log2(raw + 1) mean and variance for every gene
+    stats = data.frame(
+      mean_expression = gs$Mean_Log2Expr,
+      variance        = gs$Var_Log2Expr,
+      row.names       = gs$Gene
+    )
+  )
+}
+
+missing <- DATASETS$prefix[!file.exists(gene_score_path(DATASETS$prefix))]
+if (length(missing)) {
+  stop("Missing gene score files in ", GENE_DIR, " for: ", paste(missing, collapse = ", "),
+       "\nRun Extract_Principal_Genes_and_HVGs.Rmd first.")
+}
+
+data <- setNames(lapply(DATASETS$prefix, load_dataset), DATASETS$key)
+```
+
+# Helpers
+```{r helpers}
+# Save a plot as both TIFF and JPEG
+save_plot_tif_jpg <- function(plot, file_stem, width =2000/300, height = 1800/300) {
+  ggsave(filename = paste0(file_stem, ".tif"),
+         plot = plot, dpi = 300,
+         width = width, height = height, units = "in",
+         device = "tiff", compression = "lzw", type = "cairo", bg = "white")
+  ggsave(filename = paste0(file_stem, ".jpg"),
+         plot = plot, dpi = 300,
+         width = width, height = height, units = "in",
+         device = "jpeg", quality = 100, type = "cairo", bg = "white")
+}
+
+# Kendall tau between PPS rank and HVG rank of the top PGs
+run_kendall <- function(keys) {
+  do.call(rbind, lapply(keys, function(k) {
+    r    <- data[[k]]$ranks
+    test <- cor.test(r$PPS_rank, r$HVG_rank, method = "kendall")  # drops NA pairs
+    data.frame(
+      dataset_name = LABEL_OF[[k]],
+      tau          = unname(test$estimate),
+      pvalue       = test$p.value
+    )
+  }))
+}
+
+# Precomputed log2 mean expression & variance for a gene set
+get_gene_stats <- function(genes, stats) {
+  genes <- intersect(genes, rownames(stats))
+  data.frame(gene = genes, stats[genes, , drop = FALSE])
+}
+
+# PG and HVG gene stats for a set of datasets, in boxplot format
+build_boxplot_df <- function(keys) {
+  df <- do.call(rbind, lapply(keys, function(k) {
+    d   <- data[[k]]
+    pg  <- get_gene_stats(d$pg,  d$stats); pg$dataset  <- LABEL_OF[[k]]; pg$Category  <- "Principal Genes"
+    hvg <- get_gene_stats(d$hvg, d$stats); hvg$dataset <- LABEL_OF[[k]]; hvg$Category <- "HVGs"
+    rbind(pg, hvg)
+  }))
+  df$Category <- factor(df$Category, levels = c("Principal Genes", "HVGs"))
+  df
+}
+
+# Side-by-side top PG and top HVG lists
+build_gene_lists <- function(keys) {
+  cols <- list()
+  for (k in keys) {
+    cols[[paste0(k, "_PG")]]  <- data[[k]]$pg
+    cols[[paste0(k, "_HVG")]] <- data[[k]]$hvg
+  }
+  as.data.frame(cols)
+}
+
+make_gene_set_boxplot <- function(df, y_var, show_legend = TRUE,
+                                  y_label = c(mean_expression = "Mean log2 expression",
+                                              variance        = "Variance of log2 expression")[[y_var]]) {
+  ggplot(df, aes(x = Category, y = .data[[y_var]], fill = Category)) +
+    geom_boxplot() +
+    geom_jitter(width = 0.15, alpha = 0.5, size = 1.5, show.legend = FALSE) +
+    facet_wrap(~ dataset, scales = "free_y") +
+    labs(x = NULL, y = y_label, fill = NULL) +
+    scale_fill_manual(
+      breaks = c("Principal Genes", "HVGs"),
+      values = c("Principal Genes" = "#1BB7D8", "HVGs" = "#E55B1E")
+    ) +
+    theme_minimal(base_size = 15, base_family = "Arial") +
+    theme(legend.position = if (show_legend) "bottom" else "none",
+          axis.text.x = element_blank(),
+          strip.text  = element_text(size = 16)
+)
+}
+
+# Mean + variance boxplots (to PLOT_DIR) and the stats CSV (to CSV_DIR) for one group of datasets
+run_boxplots <- function(keys, plot_suffix, csv_name) {
+  df <- build_boxplot_df(keys)
+
+  mean_plot <- make_gene_set_boxplot(df, "mean_expression", show_legend = FALSE)
+  print(mean_plot)
+  save_plot_tif_jpg(mean_plot,
+                    file.path(PLOT_DIR, paste0("Log2v2Mean_Expression_HVG_vs_PG_boxplot_", plot_suffix)),
+                    width = boxplot_width, height = boxplot_height)
+
+  var_plot <- make_gene_set_boxplot(df, "variance", show_legend = TRUE)
+  print(var_plot)
+  save_plot_tif_jpg(var_plot,
+                    file.path(PLOT_DIR, paste0("Log2v2Variance_HVG_vs_PG_boxplot_", plot_suffix)),
+                    width = boxplot_width, height = boxplot_height)
+
+  df$gene <- NULL
+  write.csv(df, file.path(CSV_DIR, csv_name))
+  invisible(df)
+}
+```
+
+# Labeled datasets
+
+## Kendall correlation
+```{r kendall-correlation}
+kendall_results <- run_kendall(LABELED)
+kendall_results
+write.csv(kendall_results, file.path(CSV_DIR, "Kendall_Correlation.csv"))
+```
+
+## Expression and variance boxplots
+```{r expression-boxplots, fig.width = 7.5, fig.height = 5.25}
+expression_boxplot_df <- run_boxplots(LABELED, "bydataset",
+                                      "log2_mean_expression_variance_all_datasets.csv")
+```
+
+## Top gene lists
+```{r gene-lists}
+gene_dataframes <- build_gene_lists(LABELED)
+write.csv(gene_dataframes, file.path(CSV_DIR, "top100genes_all_datasets.csv"))
+```
+
+# Unlabeled datasets
+
+## Kendall correlation
+```{r kendall-correlation-unlabeled}
+kendall_results_unlabeled <- run_kendall(UNLABELED)
+kendall_results_unlabeled
+write.csv(kendall_results_unlabeled, file.path(CSV_DIR, "Kendall_Correlation_Unlabeled.csv"))
+```
+
+## Expression and variance boxplots
+```{r unlabeled-expression-boxplots, fig.width = 7.5, fig.height = 5.25}
+unlabeled_boxplot_df <- run_boxplots(UNLABELED, "unlabeled",
+                                     "log2_mean_expression_variance_all_unlabeled_datasets.csv")
+```
+
+## Top gene lists
+```{r unlabeled-gene-lists}
+unlabeled_gene_dataframes <- build_gene_lists(UNLABELED)
+write.csv(unlabeled_gene_dataframes, file.path(CSV_DIR, "top100genes_all_unlabeled_datasets.csv"))
+```

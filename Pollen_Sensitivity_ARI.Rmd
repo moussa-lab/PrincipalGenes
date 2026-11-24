@@ -1,0 +1,326 @@
+---
+title: "Pollen_Sensitivity_ARI"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+########### DISCLAIMER: AI USED TO AID WITH PLOT FORMATTING FOR PRESENTATION PURPOSES ###############
+
+knitr::opts_chunk$set(echo = TRUE, dpi = 300, fig.width = 5, fig.height = 4)
+```
+
+# Install and load R packages
+```{r install-packages}
+pkgs <- c("here", "ggplot2", "dplyr", "skmeans", "Seurat", "tidyr", "mclust")
+to_install <- setdiff(pkgs, rownames(installed.packages()))
+if (length(to_install)) {
+  install.packages(to_install)
+}
+
+for (p in pkgs) library(p, character.only = TRUE)
+```
+
+# Settings
+```{r settings, message=FALSE, warning=FALSE}
+
+source(here("clSensitivity.R"))
+
+#Run control
+RUN_MODE      <- "plot"   # "compute" = cluster + write CSVs + plot; "plot" = read CSVs + plot only
+SKIP_EXISTING <- FALSE       # compute mode: skip datasets whose CSVs already exist
+
+# Directories
+INPUT_DIR <- here("Filtered_Input")
+DATA_DIR  <- here("Data_Hold")
+GENE_DIR  <- file.path(DATA_DIR, "Gene_Scores")       # from step 1
+RES_DIR   <- file.path(DATA_DIR, "Sensitivity_ARI")   # CSV outputs
+PLOT_DIR  <- here("Sensitivity_ARI")                  # all plots together
+for (d in c(RES_DIR, PLOT_DIR)) dir.create(d, recursive = TRUE, showWarnings = FALSE)
+
+# Plot appearance
+PLOT_DPI    <- 300
+PLOT_WIDTH  <- 5
+PLOT_HEIGHT <- 4
+COL_PG    <- "#1BB7D8"
+COL_HVG   <- "#E55B1E"
+COL_UNION <- "#2C9F45"
+
+# Analysis constants
+SEED       <- 12345
+THRESHOLDS <- seq(10, 50, by = 2)   # cumulative GPS (%) cutoffs
+TOL        <- 1e-6                   # floating-point tolerance for reaching a threshold
+
+# Datasets (only those with ground truth)
+datasets <- c(
+    Pollen                = "Pollen_Counts.csv"
+)
+
+LABEL_FILES <- c( Pollen                = "Pollen_Labels.csv"
+)
+
+LEGEND_DATASETS <- c(
+    "TabulaMuris_Lung"
+  , "TabulaMuris_Liver"
+  , "Human_Primary_Motor_Cortex"
+)
+
+# Axis limits
+X_LIMITS      <- c(10, 50)
+Y_LIMITS_SENS <- c(0, 1)
+Y_LIMITS_ARI  <- c(0, 1)
+
+# Optional per-dataset overrides; any field left out falls back to the globals
+LIMIT_OVERRIDES <- list(
+    TabulaMuris_Lung = list(y_ari = c(0, 0.5)),
+    Human_Primary_Motor_Cortex = list(y_sens = c(0, 1.2))
+)
+
+# Legend placement
+# c(1, 0) = bottom-right corner, inside the panel
+LEGEND_POS <- c(1, 0)
+```
+
+# Helpers
+
+```{r helpers}
+save_plot_both <- function(plot, file_stub) {
+  ggsave(filename = paste0(file_stub, ".tif"), plot = plot, dpi = PLOT_DPI,
+         width = PLOT_WIDTH, height = PLOT_HEIGHT, units = "in",
+         device = "tiff", compression = "lzw", type = "cairo", bg = "white")
+  ggsave(filename = paste0(file_stub, ".jpg"), plot = plot, dpi = PLOT_DPI,
+         width = PLOT_WIDTH, height = PLOT_HEIGHT, units = "in",
+         device = "jpeg", quality = 100, type = "cairo", bg = "white")
+}
+
+read_counts <- function(file) {
+  cm <- read.csv(file.path(INPUT_DIR, file), row.names = 1, check.names = FALSE)
+  rownames(cm) <- gsub("-", "_", rownames(cm))
+  colnames(cm) <- gsub("\\.", "-", colnames(cm))
+  as.matrix(cm)
+}
+
+# Named numeric truth vector (1..k), aligned to the given cells by name
+read_truth <- function(truth_file, cells) {
+  lab <- read.csv(file.path(INPUT_DIR, truth_file))
+  lab$cell <- gsub("\\.", "-", lab$cell)
+  idx <- match(cells, lab$cell)
+  if (anyNA(idx)) warning(sum(is.na(idx)), " cells have no label and will be excluded")
+  labels <- lab$label[idx]
+  keep   <- !is.na(labels)
+  labels <- labels[keep]
+  levs   <- unique(lab$label[lab$cell %in% cells[keep]])   # label-file order
+  setNames(as.numeric(factor(labels, levels = levs)), cells[keep])
+}
+
+file_paths <- function(prefix) {
+  list(sens = file.path(RES_DIR, paste0(prefix, "_SKM_sensitivity_results.csv")),
+       ari  = file.path(RES_DIR, paste0(prefix, "_SKM_rand_index_results.csv")))
+}
+
+# SK-means on log2(x+1) of a gene subset; cells with all-zero rows are dropped
+run_skm <- function(mat, genes, k) {
+  x <- t(log2(mat[genes, , drop = FALSE] + 1))
+  keep <- rowSums(x) > 0
+  set.seed(SEED)
+  cl <- skmeans(x = x[keep, , drop = FALSE], k = k, control = list(verbose = FALSE))$cluster
+  names(cl) <- rownames(x)[keep]
+  list(cluster = cl, dropped = sum(!keep))
+}
+
+score_skm <- function(res, truth, k) {
+  tv <- truth[names(res$cluster)]
+  c(sens = as.numeric(clustSensitivity(res$cluster, tv, as.character(1:k))[1, 2]),
+    ari  = adjustedRandIndex(x = res$cluster, y = tv))
+}
+
+get_limits <- function(prefix) {
+  o <- LIMIT_OVERRIDES[[prefix]]
+  list(x      = if (!is.null(o$x))      o$x      else X_LIMITS,
+       y_sens = if (!is.null(o$y_sens)) o$y_sens else Y_LIMITS_SENS,
+       y_ari  = if (!is.null(o$y_ari))  o$y_ari  else Y_LIMITS_ARI)
+}
+
+# Plot builder
+plot_metric <- function(df, cols, labels, xlim, ylim, show_legend,
+                        ylab,
+                        legend_pos = LEGEND_POS) {
+  df <- df[df$thresholds >= xlim[1] & df$thresholds <= xlim[2], ]   # hard x limits
+  plot_df <- df %>%
+    pivot_longer(cols = all_of(cols), names_to = "metric", values_to = "value")
+  plot_df$metric <- factor(plot_df$metric, levels = cols)
+  plot_df$label_val <- NA
+  plot_df$label_val[plot_df$metric == cols[1]] <- plot_df$num_genes[plot_df$metric == cols[1]]
+  plot_df$label_val[plot_df$metric == cols[3]] <- plot_df$union_num_genes[plot_df$metric == cols[3]]
+
+  p <- ggplot(plot_df, aes(x = thresholds, y = value, color = metric)) +
+    geom_point(size = 2) +
+    geom_text(data = subset(plot_df, metric == cols[1]), aes(label = label_val),
+              color = COL_PG, vjust = +2, size = 3, check_overlap = TRUE) +
+    geom_text(data = subset(plot_df, metric == cols[3]), aes(label = label_val),
+              color = COL_UNION, vjust = -2, size = 3, check_overlap = TRUE) +
+    geom_smooth(method = "loess",
+                method.args = list(span = 1, degree = 1, surface = "direct"),
+                se = FALSE) +
+    coord_cartesian(ylim = ylim) +                                    # y zoom only
+    labs(x = "Cumulative GPS (%)", y = ylab, title = NULL) +
+    scale_color_manual(name = NULL, breaks = cols,
+                       values = setNames(c(COL_PG, COL_HVG, COL_UNION), cols),
+                       labels = setNames(labels, cols)) +
+    theme_minimal()
+
+  if (show_legend) {
+    p <- p + theme(
+      legend.position             = "inside",
+      legend.position.inside      = legend_pos,
+      legend.justification.inside = legend_pos,
+      legend.box.margin           = margin(4, 4, 4, 4),
+      legend.title                = element_blank(),
+      legend.background           = element_rect(fill = alpha("white", 0.8), colour = NA)
+    )
+  } else {
+    p <- p + theme(legend.position = "none")
+  }
+  p
+}
+```
+
+# Compute (RUN_MODE = "compute")
+
+```{r compute}
+if (RUN_MODE == "compute") {
+  for (prefix in names(datasets)) {
+    message("==================== ", prefix, " ====================")
+    paths <- file_paths(prefix)
+    if (SKIP_EXISTING && all(file.exists(unlist(paths)))) {
+      message("CSVs exist, skipping"); next
+    }
+
+    tryCatch({
+      # Inputs
+      count_matrix <- read_counts(datasets[[prefix]])
+      true_labels_vector <- read_truth(LABEL_FILES[[prefix]], colnames(count_matrix))
+      count_matrix <- count_matrix[, names(true_labels_vector), drop = FALSE]
+      k_cls <- length(unique(true_labels_vector))
+
+      gene_df <- read.csv(file.path(GENE_DIR, paste0(prefix, "_gene_scores.csv")),
+                          check.names = FALSE)
+
+      # PG ranking: genes with GPS > 0, descending
+      pg_scores <- setNames(gene_df$GPS, gene_df$Gene)
+      pg_scores <- sort(pg_scores[pg_scores > 0], decreasing = TRUE)
+
+      # HVG ranking: zero dispersion -> NA -> excluded entirely
+      hvg_scores <- setNames(gene_df$HVG_Dispersion, gene_df$Gene)
+      hvg_scores[hvg_scores == 0] <- NA
+      HVGs <- names(sort(hvg_scores[!is.na(hvg_scores)], decreasing = TRUE))
+
+      # Cumulative-threshold gene selection
+      selectedGeneList <- list()
+      currentpropsum   <- 0
+      threshold_index  <- 1
+      for (i in seq_along(pg_scores)) {
+        currentpropsum <- currentpropsum + pg_scores[i] * 100
+        while (threshold_index <= length(THRESHOLDS) &&
+               currentpropsum >= THRESHOLDS[threshold_index] - TOL) {
+          selectedGeneList[[threshold_index]] <- names(pg_scores)[seq_len(i)]
+          message("Threshold ", THRESHOLDS[threshold_index], " reached at index ", i)
+          threshold_index <- threshold_index + 1
+        }
+        if (threshold_index > length(THRESHOLDS)) break
+      }
+      thresholds_used <- THRESHOLDS[seq_along(selectedGeneList)]
+      num_genes <- sapply(selectedGeneList, length)
+
+      # SK-means for PG, HVG (top-N matched to PG count), Union
+      n_t <- length(selectedGeneList)
+      out <- matrix(NA_real_, n_t, 9,
+                    dimnames = list(NULL, c("pg_sens", "hvg_sens", "union_sens",
+                                            "pg_ari", "hvg_ari", "union_ari",
+                                            "pg_drop", "hvg_drop", "union_drop")))
+      hvg_num_genes   <- integer(n_t)
+      union_num_genes <- integer(n_t)
+
+      for (i in seq_len(n_t)) {
+        pg_genes    <- selectedGeneList[[i]]
+        hvg_genes   <- HVGs[seq_len(min(length(HVGs), num_genes[i]))]
+        union_genes <- union(pg_genes, hvg_genes)
+        hvg_num_genes[i]   <- length(hvg_genes)
+        union_num_genes[i] <- length(union_genes)
+
+        pg_res    <- run_skm(count_matrix, pg_genes,    k_cls)
+        hvg_res   <- run_skm(count_matrix, hvg_genes,   k_cls)
+        union_res <- run_skm(count_matrix, union_genes, k_cls)
+
+        s_pg <- score_skm(pg_res, true_labels_vector, k_cls)
+        s_hv <- score_skm(hvg_res, true_labels_vector, k_cls)
+        s_un <- score_skm(union_res, true_labels_vector, k_cls)
+
+        out[i, ] <- c(s_pg["sens"], s_hv["sens"], s_un["sens"],
+                      s_pg["ari"],  s_hv["ari"],  s_un["ari"],
+                      pg_res$dropped, hvg_res$dropped, union_res$dropped)
+        message(prefix, ": threshold ", thresholds_used[i], " done (", num_genes[i], " genes)")
+      }
+
+      common_cols <- data.frame(
+        thresholds          = thresholds_used,
+        num_genes           = as.integer(num_genes),
+        hvg_num_genes       = hvg_num_genes,
+        union_num_genes     = union_num_genes,
+        PG_cells_dropped    = as.integer(out[, "pg_drop"]),
+        HVG_cells_dropped   = as.integer(out[, "hvg_drop"]),
+        Union_cells_dropped = as.integer(out[, "union_drop"])
+      )
+
+      sens_df <- data.frame(PG_sensitivity  = out[, "pg_sens"],
+                            HVG_sensitivity = out[, "hvg_sens"],
+                            PG_HVG_Union    = out[, "union_sens"],
+                            common_cols)
+      ari_df  <- data.frame(PG_randIndex     = out[, "pg_ari"],
+                            HVG_randIndex    = out[, "hvg_ari"],
+                            PG_HVG_UnionRand = out[, "union_ari"],
+                            common_cols)
+
+      write.csv(sens_df, paths$sens, row.names = FALSE)
+      write.csv(ari_df,  paths$ari,  row.names = FALSE)
+    }, error = function(e) {
+      message("FAILED on ", prefix, ": ", conditionMessage(e))
+    })
+
+    rm(list = intersect(ls(), c("count_matrix", "gene_df", "selectedGeneList", "out")))
+    invisible(gc())
+  }
+}
+```
+
+# Plot (runs in both modes, reads from CSVs)
+
+```{r plot}
+for (prefix in names(datasets)) {
+  paths <- file_paths(prefix)
+  if (!all(file.exists(unlist(paths)))) {
+    message("No CSVs for ", prefix, ", skipping plots"); next
+  }
+  lims   <- get_limits(prefix)
+  legend <- prefix %in% LEGEND_DATASETS
+
+  sens_df <- read.csv(paths$sens)
+  ari_df  <- read.csv(paths$ari)
+
+  p_sens <- plot_metric(sens_df,
+                        cols   = c("PG_sensitivity", "HVG_sensitivity", "PG_HVG_Union"),
+                        labels = c("Principal Genes", "Seurat's HVG", "HVG_PG_Union"),
+                        xlim = lims$x, ylim = lims$y_sens, show_legend = legend, ylab="Clustering Sensitivity")
+  save_plot_both(p_sens, file.path(PLOT_DIR, paste0(prefix, "_PG_HVG_UNION_Sensitivity")))
+
+  p_ari <- plot_metric(ari_df,
+                       cols   = c("PG_randIndex", "HVG_randIndex", "PG_HVG_UnionRand"),
+                       labels = c("Principal Genes", "Seurat's HVG", "HVG_PG_Union"),
+                       xlim = lims$x, ylim = lims$y_ari, show_legend = legend, ylab="Adjusted Rand Index")
+  save_plot_both(p_ari, file.path(PLOT_DIR, paste0(prefix, "_PG_HVG_UNION_RandIndex")))
+
+  print(p_sens); print(p_ari)
+}
+```

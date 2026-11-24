@@ -1,0 +1,205 @@
+---
+title: "Violin_Plots"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+date: "2026-11-03"
+---
+
+```{r setup, include=FALSE}
+########### DISCLAIMER: AI USED TO AID WITH PLOT FORMATTING FOR PRESENTATION PURPOSES ###############
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Install and load R packages
+```{r install-packages}
+pkgs <- c("here", "ggplot2", "Seurat")
+to_install <- setdiff(pkgs, rownames(installed.packages()))
+if (length(to_install)) {
+  install.packages(to_install)
+}
+
+for (p in pkgs) library(p, character.only = TRUE)
+```
+
+# Constants (edit everything here)
+```{r define-constants}
+# Top genes taken from each ranking (GPS and HVG dispersion)
+TOP_N <- 100
+
+# Violin plots
+VIOLIN_N    <- 8   # first N genes (rank order) per gene set
+VIOLIN_NCOL <- 4   # panels per row
+
+# Directories
+INPUT_DIR <- here("Filtered_Input")
+GENE_DIR  <- here("Data_Hold", "Gene_Scores")   # written by Extract_Principal_Genes_and_HVGs.Rmd
+OUT_DIR   <- here("Violin_Plots")      # <OUT_DIR>/<name>_<set>_Violin_Plot.tif/.jpg
+
+# Plot appearance
+PLOT_DPI    <- 300
+PLOT_WIDTH  <- 5   # inches (1500 x 1200 px at 300 dpi)
+PLOT_HEIGHT <- 4
+
+# Datasets to run: name (prefix from the extraction Rmd) = counts CSV filename
+# Comment out a line to skip that dataset
+datasets <- c(
+    Azimuth_MMC                = "Azimuth_MMC_Counts.csv"  # first entry: don't comment out
+  , Human_Intestines           = "Human_Intestines_subset_counts.csv"
+  , Mouse_Heart                = "Mouse_Heart_subset_counts.csv"
+  , PBMCs                      = "PBMCs_Counts.csv"
+  , TabulaMuris_Liver          = "TabulaMuris_Liver_Counts.csv"
+  , Human_CRC                  = "Human_CRC_subset_counts.csv"
+  , Human_Primary_Motor_Cortex = "Human_Primary_Motor_Cortex.csv"
+  , PBMC12K                    = "PBMC12K_Counts.csv"
+  , Pollen                     = "Pollen_TPM_Matrix.csv"
+  , TabulaMuris_Lung           = "TabulaMuris_Lung_Counts.csv"
+)
+```
+
+# Functions
+## Loading
+```{r define-functions-loading}
+# Read a counts CSV and standardize gene/cell names (same scheme as the extraction Rmd)
+load_dataset <- function(path) {
+  counts <- read.csv(path, row.names = 1, check.names = FALSE)
+  rownames(counts) <- gsub("-", "_", rownames(counts))
+  colnames(counts) <- gsub("\\.", "-", colnames(counts))
+  counts
+}
+
+# Normalize with Seurat (log-normalize, scale factor 10,000)
+normalize_counts <- function(counts) {
+  seurat_obj <- CreateSeuratObject(counts = as.matrix(counts))
+  Idents(seurat_obj) <- "All_Cells"
+  NormalizeData(seurat_obj)
+}
+
+gene_score_path <- function(name) {
+  file.path(GENE_DIR, paste0(name, "_gene_scores.csv"))
+}
+
+# 0 means "dropped by PG filters / not scored by Seurat" -> NA
+read_gene_scores <- function(name) {
+  gs <- read.csv(gene_score_path(name), check.names = FALSE, stringsAsFactors = FALSE)
+  gs$GPS[gs$GPS == 0]                       <- NA
+  gs$HVG_Dispersion[gs$HVG_Dispersion == 0] <- NA
+  gs
+}
+
+# Top n gene names by a score, descending, ignoring NA
+top_genes <- function(values, genes, n = TOP_N) {
+  keep <- !is.na(values)
+  names(head(sort(setNames(values[keep], genes[keep]), decreasing = TRUE), n))
+}
+
+# Split PG and HVG lists into PG-only / HVG-only / intersect
+# (intersect keeps PG rank order)
+build_violin_sets <- function(pg_genes, hvg_genes) {
+  common <- intersect(pg_genes, hvg_genes)
+  list(PG_Only        = setdiff(pg_genes,  common),
+       HVG_Only       = setdiff(hvg_genes, common),
+       INTERSECT_Only = common)
+}
+```
+
+## Plotting and saving
+```{r define-functions-plots}
+# Save a plot as TIFF and JPG: <out_dir>/<name>_<suffix>.tif/.jpg
+save_plot <- function(plot, out_dir, name, suffix,
+                      width = PLOT_WIDTH, height = PLOT_HEIGHT) {
+  stem <- file.path(out_dir, paste0(name, "_", suffix))
+
+  ggsave(filename = paste0(stem, ".tif"), plot = plot, dpi = PLOT_DPI,
+         width = width, height = height, units = "in",
+         device = "tiff", compression = "lzw", type = "cairo", bg = "white")
+
+  ggsave(filename = paste0(stem, ".jpg"), plot = plot, dpi = PLOT_DPI,
+         width = width, height = height, units = "in",
+         device = "jpeg", quality = 100, type = "cairo", bg = "white")
+}
+
+# Seurat feature names for the first VIOLIN_N genes of a ranked list, dropping
+# any not in the Seurat object. Seurat stores features with "-" instead of "_".
+violin_features <- function(norm_obj, genes, label) {
+  genes    <- head(genes, VIOLIN_N)
+  features <- gsub("_", "-", genes)
+  found    <- features %in% rownames(norm_obj)
+  if (any(!found)) {
+    warning(label, ": ", sum(!found), " of the first ", VIOLIN_N,
+            " genes not in the Seurat object and left out: ",
+            paste(genes[!found], collapse = ", "))
+  }
+  features[found]
+}
+
+# Violin plot of the given features (no points)
+make_violin_plot <- function(norm_obj, features) {
+  VlnPlot(norm_obj, features = features, ncol = VIOLIN_NCOL, pt.size = 0) &
+    theme(axis.title.x = element_blank(),
+          axis.text.x  = element_blank(),
+          legend.position = "none")
+}
+```
+
+## Full pipeline for one dataset
+```{r define-functions-pipeline}
+run_dataset <- function(name, counts_path) {
+  gs        <- read_gene_scores(name)
+  pg_genes  <- top_genes(gs$GPS,            gs$Gene)
+  hvg_genes <- top_genes(gs$HVG_Dispersion, gs$Gene)
+  sets      <- build_violin_sets(pg_genes, hvg_genes)
+
+  norm_obj <- normalize_counts(load_dataset(counts_path))
+
+  for (set_name in names(sets)) {
+    features <- violin_features(norm_obj, sets[[set_name]], paste(name, set_name))
+    if (!length(features)) {
+      message(name, ": no genes for ", set_name, " violin plot; skipped")
+      next
+    }
+
+    p <- make_violin_plot(norm_obj, features)
+    print(p)
+    save_plot(p, OUT_DIR, name, paste0(set_name, "_Violin_Plot"))
+    message(name, ": ", set_name, " plotted with ", length(features), " genes")
+  }
+
+  invisible(lengths(sets))
+}
+```
+
+# Run all datasets
+```{r run-all}
+# Check all input files exist before starting
+needed <- c(file.path(INPUT_DIR, datasets),
+            gene_score_path(names(datasets)))
+missing <- needed[!file.exists(needed)]
+if (length(missing)) {
+  stop("Missing input files:\n  ", paste(missing, collapse = "\n  "),
+       "\n(Gene score files come from Extract_Principal_Genes_and_HVGs.Rmd.)")
+}
+
+dir.create(OUT_DIR, recursive = TRUE, showWarnings = FALSE)
+
+status <- character(0)
+
+for (name in names(datasets)) {
+  status[name] <- tryCatch({
+    run_dataset(name, file.path(INPUT_DIR, datasets[[name]]))
+    "success"
+  }, error = function(e) conditionMessage(e))
+  gc()  # free the dense count matrix before the next dataset
+}
+
+# Summary
+failed <- status[status != "success"]
+if (length(failed)) {
+  message("Failed datasets:")
+  for (n in names(failed)) message("  ", n, ": ", failed[[n]])
+} else {
+  message("All ens", length(status), " datasets completed.")
+}
+```

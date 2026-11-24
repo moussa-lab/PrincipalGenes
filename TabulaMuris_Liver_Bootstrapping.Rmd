@@ -1,0 +1,263 @@
+---
+title: "TabulaMuris_Liver_Bootstrapping"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+########### DISCLAIMER: AI USED TO AID WITH PLOT FORMATTING FOR PRESENTATION PURPOSES ###############
+
+# Input
+INPUT_DIR <- "Filtered_Input"   # folder (relative to project root) holding count matrices and label files
+
+# Plot appearance
+FONT_FAMILY     <- "Arial"
+LEGEND_POSITION <- c(1, 0)  # cartesian coordinates. Range from 0 to 1
+PLOT_DPI        <- 300
+PLOT_WIDTH      <- 5        # inches
+PLOT_HEIGHT     <- 4
+SHOW_LEGEND     <- TRUE     # TRUE = draw legend on plots, FALSE = no legend
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  dpi        = PLOT_DPI,
+  fig.width  = PLOT_WIDTH,
+  fig.height = PLOT_HEIGHT
+)
+```
+
+# Install R packages
+```{r install-packages}
+pkgs <- c("here", "ggplot2", "dplyr", "Seurat", "skmeans", "mclust", "tidyr", "ggrepel", "stringr")
+to_install <- setdiff(pkgs, rownames(installed.packages()))
+if (length(to_install)) {
+  install.packages(to_install)
+}
+
+for (p in pkgs) library(p, character.only = TRUE)
+```
+
+```{r source}
+source(here("Principal_Genes.R"))
+source(here("clSensitivity.R"))
+```
+
+# Output directories
+```{r output-dirs}
+data_dir <- here("Data_Hold", "Bootstrapping")
+plot_dir <- here("Bootstrapping")
+dir.create(data_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+# Helper functions
+```{r helpers}
+# Cumulative PG gene lists: for each threshold, the smallest set of top genes
+# whose cumulative score (in %) reaches that threshold. NULL if never reached.
+build_pg_lists <- function(top_genes, thresholds) {
+  cum_pct <- cumsum(top_genes) * 100
+  lapply(thresholds, function(t) {
+    idx <- which(cum_pct >= t)[1]
+    if (is.na(idx)) NULL else names(top_genes)[seq_len(idx)]
+  })
+}
+
+# Seurat dispersion-ranked HVGs (descending), computed on the given counts
+rank_hvgs <- function(counts) {
+  so <- CreateSeuratObject(counts = as.matrix(counts))
+  Idents(so) <- "All_Cells"
+  so <- NormalizeData(so, verbose = FALSE)
+  so <- FindVariableFeatures(so, selection.method = "dispersion",
+                             nfeatures = nrow(counts), verbose = FALSE)  # dispersion = log(variance/mean)
+  disp <- so[["RNA"]]@meta.data$vf_disp_data_mvp.dispersion
+  names(disp) <- rownames(counts)
+  disp[is.na(disp)] <- 0
+  names(sort(disp, decreasing = TRUE))
+}
+
+# skmeans clustering on a gene set, returns sensitivity
+cluster_sensitivity <- function(genes, counts, labels, k, seed) {
+  mat <- counts[genes, , drop = FALSE]
+  set.seed(seed)
+  cl <- skmeans(x = t(log2(mat + 1)), k = k, control = list(verbose = FALSE))$cluster
+  sens <- clustSensitivity(cl, labels, as.character(1:k))
+  as.numeric(sens[1, 2])
+}
+
+# Mean, SD and 95% t-based CI across subsets (columns = thresholds)
+summarize_accuracy <- function(acc) {
+  n   <- colSums(!is.na(acc))
+  m   <- colMeans(acc, na.rm = TRUE)
+  s   <- apply(acc, 2, sd, na.rm = TRUE)
+  moe <- qt(0.975, df = pmax(n - 1, 1)) * s / sqrt(n)
+  moe[n < 2] <- NA_real_
+  data.frame(n_subsets = n, mean_accuracy = m, sd_accuracy = s,
+             ci_lower = m - moe, ci_upper = m + moe)
+}
+
+save_plot <- function(p, stem) {
+  ggsave(file.path(plot_dir, paste0(stem, ".jpg")), p, device = "jpeg",
+         width = PLOT_WIDTH, height = PLOT_HEIGHT, units = "in", dpi = PLOT_DPI)
+  ggsave(file.path(plot_dir, paste0(stem, ".tif")), p, device = "tiff",
+         width = PLOT_WIDTH, height = PLOT_HEIGHT, units = "in", dpi = PLOT_DPI,
+         compression = "lzw")
+}
+```
+
+# Tabula Muris Liver
+## Read in the dataset
+```{r read-in-data}
+input_file <- here(INPUT_DIR, "TabulaMuris_Liver_Counts.csv")
+truth_file <- here(INPUT_DIR, "TabulaMuris_Liver_Labels.csv")
+name       <- "TabulaMuris_Liver"
+
+csv_path  <- file.path(data_dir, paste0(name, "_PG_HVG_Union_Bootstrapping_Sensitivity.csv"))
+plot_stem <- paste0(name, "_PG_HVG_Union_Bootstrapping_Sensitivity")
+
+count_matrix <- read.csv(input_file, check.names = FALSE, row.names = 1)
+
+# True labels, matched to count_matrix columns by cell name
+full_true_labels <- read.csv(truth_file, check.names = FALSE)
+label_levels <- unique(full_true_labels$label)
+true_labels_vector <- setNames(
+  as.numeric(factor(full_true_labels$label, levels = label_levels)),
+  full_true_labels$cell
+)[colnames(count_matrix)]
+names(true_labels_vector) <- colnames(count_matrix)
+if (anyNA(true_labels_vector)) warning("Some cells in count_matrix have no true label.")
+k_cls <- max(true_labels_vector, na.rm = TRUE)
+```
+
+## Subsample 80% of cells, run gene selection + skmeans on each subset
+```{r subsampled-gene-selection-and-clustering}
+thresholds  <- seq(10, 50, by = 2)
+n_subsets   <- 5
+subset_frac <- 0.8
+seeds       <- c(12345, 54672, 44182, 72198, 98230)
+
+if (file.exists(csv_path)) {
+  message("Found existing ", csv_path, " -- skipping computation and loading it.")
+  plot_df1 <- read.csv(csv_path)
+} else {
+  all_cells   <- colnames(count_matrix)
+  subset_size <- floor(subset_frac * length(all_cells))
+  n_thr       <- length(thresholds)
+
+  # rows = subsets, columns = thresholds
+  acc_pg <- acc_hvg <- acc_union <- matrix(NA_real_, n_subsets, n_thr)
+  ngenes_pg <- ngenes_union <- matrix(NA_real_, n_subsets, n_thr)
+
+  for (r in seq_len(n_subsets)) {
+    message("Subset ", r, " of ", n_subsets)
+    set.seed(seeds[r])
+    cell_subset <- sample(all_cells, subset_size)
+    sub_counts  <- count_matrix[, cell_subset]
+    sub_labels  <- true_labels_vector[cell_subset]
+
+    # Gene selection on this subset only
+    set.seed(seeds[r])
+    pg_res <- principalgenes(sub_counts, cut = 1,
+                             filters = c("riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter"))
+    pg_lists   <- build_pg_lists(pg_res$top_genes, thresholds)
+    hvg_ranked <- rank_hvgs(sub_counts)
+
+    for (j in seq_len(n_thr)) {
+      pg_genes <- pg_lists[[j]]
+      if (is.null(pg_genes)) {
+        message("  threshold ", thresholds[j], " not reached in subset ", r)
+        next
+      }
+      hvg_genes   <- hvg_ranked[seq_along(pg_genes)]   # size-matched to PG
+      union_genes <- union(pg_genes, hvg_genes)
+
+      ngenes_pg[r, j]    <- length(pg_genes)
+      ngenes_union[r, j] <- length(union_genes)
+
+      acc_pg[r, j]    <- cluster_sensitivity(pg_genes,    sub_counts, sub_labels, k_cls, seeds[r])
+      acc_hvg[r, j]   <- cluster_sensitivity(hvg_genes,   sub_counts, sub_labels, k_cls, seeds[r])
+      acc_union[r, j] <- cluster_sensitivity(union_genes, sub_counts, sub_labels, k_cls, seeds[r])
+    }
+  }
+
+  mean_ng_pg    <- colMeans(ngenes_pg,    na.rm = TRUE)
+  mean_ng_union <- colMeans(ngenes_union, na.rm = TRUE)
+
+  make_block <- function(acc, metric, mean_ng, label) {
+    cbind(data.frame(thresholds = thresholds, metric = metric,
+                     mean_num_genes = mean_ng,
+                     label_val = if (label) round(mean_ng) else NA),
+          summarize_accuracy(acc))
+  }
+
+  plot_df1 <- bind_rows(
+    make_block(acc_pg,    "PG_sensitivity",  mean_ng_pg,    TRUE),
+    make_block(acc_hvg,   "HVG_sensitivity", mean_ng_pg,    FALSE),
+    make_block(acc_union, "PG_HVG_Union",    mean_ng_union, TRUE)
+  )
+
+  write.csv(plot_df1, csv_path, row.names = FALSE)
+}
+
+plot_df1$metric <- factor(plot_df1$metric,
+                          levels = c("PG_sensitivity", "HVG_sensitivity", "PG_HVG_Union"))
+```
+
+## Plot mean clustering sensitivity vs cumulative score with 95% CI
+```{r plot-subsampled-accuracy}
+show_legend <- SHOW_LEGEND
+
+p <- ggplot(plot_df1, aes(x = thresholds, y = mean_accuracy, color = metric)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), width = 0.5) +
+
+  # PG labels (mean # genes across subsets)
+  geom_text(
+    data = subset(plot_df1, metric == "PG_sensitivity"),
+    aes(label = label_val),
+    color = "#1BB7D8", vjust = +2, size = 3, check_overlap = TRUE,
+    family = FONT_FAMILY, show.legend = FALSE
+  ) +
+
+  # Union labels (mean # genes across subsets)
+  geom_text(
+    data = subset(plot_df1, metric == "PG_HVG_Union"),
+    aes(label = label_val),
+    color = "darkgreen", vjust = -2, size = 3, check_overlap = TRUE,
+    family = FONT_FAMILY, show.legend = FALSE
+  ) +
+
+  geom_smooth(
+    method = "loess",
+    method.args = list(span = 1, degree = 1, surface = "direct"),
+    se = FALSE
+  ) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(x = "Cumulative GPS (%)", y = "Clustering Sensitivity", title = NULL) +
+  scale_color_manual(
+    breaks = c("PG_sensitivity", "HVG_sensitivity", "PG_HVG_Union"),
+    values = c(
+      "PG_sensitivity"  = "#1BB7D8",
+      "HVG_sensitivity" = "#E55B1E",
+      "PG_HVG_Union"    = "#2C9F45"
+    ),
+    labels = c(
+      "PG_sensitivity"  = "Principal Genes",
+      "HVG_sensitivity" = "Seurat's HVG",
+      "PG_HVG_Union"    = "HVG_PG_Union"
+    )
+  ) +
+  theme_minimal(base_family = FONT_FAMILY) +
+  theme(
+    legend.position             = if (show_legend) "inside" else "none",
+    legend.position.inside      = LEGEND_POSITION,
+    legend.justification.inside = LEGEND_POSITION,
+    legend.box.margin           = margin(4, 4, 4, 4),
+    legend.title                = element_blank(),
+    legend.background           = element_rect(fill = alpha("white", 0.8), colour = NA)
+  )
+
+print(p)
+save_plot(p, plot_stem)
+```

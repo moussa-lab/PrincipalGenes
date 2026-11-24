@@ -1,0 +1,259 @@
+---
+title: "Vary_Num_PCs"
+output: html_document
+date: "2026-08-21"
+---
+
+```{r setup, include=FALSE}
+########### DISCLAIMER: AI USED TO AID WITH PLOT FORMATTING FOR PRESENTATION PURPOSES ###############
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  dpi = 300,
+  fig.width = 5,   # 1500 pixels / 300 dpi
+  fig.height = 4   # 1200 pixels / 300 dpi
+)
+```
+
+# Install and load R packages
+```{r install-packages}
+pkgs <- c("here", "ggplot2", "skmeans", "irlba", "stringr")
+to_install <- setdiff(pkgs, rownames(installed.packages()))
+if (length(to_install)) {
+  install.packages(to_install)
+}
+for (p in pkgs) library(p, character.only = TRUE)
+
+source(here("clSensitivity.R"))
+```
+
+# Constants
+```{r constants}
+INPUT_DIR <- here("Filtered_Input")
+OUT_DIR   <- here("Properties_and_Performance")
+dir.create(OUT_DIR, recursive = TRUE, showWarnings = FALSE)
+
+FILTERS <- c("riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter")
+N_PCS   <- 2:40
+TOP_N   <- 1000   # top genes used for clustering
+SEED    <- 12345
+
+FONT_FAMILY <- "Arial"
+PLOT_DPI    <- 300
+PLOT_WIDTH  <- 5   # inches (1500 x 1200 px at 300 dpi)
+PLOT_HEIGHT <- 4
+
+# name = output file prefix
+DATASETS <- list(
+  Azimuth = list(
+    counts = "Azimuth_MMC_Counts.csv",
+    labels = "Azimuth_MMC_Labels.csv"
+  ),
+  TabulaMuris_Lung = list(
+    counts = "TabulaMuris_Lung_Counts.csv",
+    labels = "TabulaMuris_Lung_Labels.csv"
+  )
+)
+```
+
+# OPTIMAL PC SELECTION ALGO
+```{r quick-elbow}
+quick.elbow <- function(varpc,low=.08,max.pc=.9) {
+  ee <- varpc/sum(varpc) #proportinal eigenvalues
+  while(low>=max(ee)) { low <- low/2 } #when no principal component eigenvalues are large enough, cut low in half
+  lowie <- (ee<low) ; highie <- ee>low/8
+  low.ones <- which(lowie & highie)
+  others <- length(which(!lowie))
+  if(length(low.ones)>0) {
+    if(length(low.ones)==1) {
+      elbow <- low.ones
+    } else {
+      set <- ee[low.ones]
+      pc.drops <- abs(diff(set))/(set[1:(length(set)-1)])
+      infz <- is.infinite(pc.drops)
+      #print(pc.drops)
+      elbow <- which(pc.drops==max(pc.drops[!infz],na.rm=T))[1]+others
+    }
+  } else {
+    # if somehow there are no small eigenvalues, just choose the elbow as the second last
+    cat("no eigenvalues were significantly smaller than the previous\n")
+    elbow <- length(ee)
+  }
+  if(tail(cumsum(ee[1:elbow]),1)>max.pc) {
+    elbow <- which(cumsum(ee)>max.pc)[1]-1
+  }
+  if(elbow<1) {
+    warning("elbow calculation failed, return zero")
+    return(0)
+  }
+  elbow<-elbow + 1 # include last to be sure ..
+  names(elbow) <- NULL
+  return(elbow)
+}
+```
+
+# GENES FILTERING
+```{r gene-filter}
+genes_filter <- function(df, filters = c("IgFilter", "TrFilter", "riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter")) {
+  #ensure gene names are uppercase for consistent matching
+  geneNames <- toupper(rownames(df))
+  GenesToFilterOut <- integer(0)
+  if(is.null(filters)){
+    return(df)
+  }
+
+  #immunoglobulin genes (IGHV, IGKV)
+  if ("IgFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "IGHV") | str_starts(geneNames, "IGKV"))
+    )
+  }
+
+  #t-cell receptor genes (TRAV, TRBV)
+  if ("TrFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "TRAV") | str_starts(geneNames, "TRBV"))
+    )
+  }
+
+  #ribosomal genes (RPL, RPS)
+  if ("riboFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "RPL") | str_starts(geneNames, "RPS"))
+    )
+  }
+
+  #mitochondrial genes (MT-)
+  if ("mtFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "MT-"))
+    )
+  }
+
+  #GM-prefixed genes
+  if ("gmFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_starts(geneNames, "GM"))
+    )
+  }
+
+  #genes ending with RIK
+  if ("rikFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(str_ends(geneNames, "RIK"))
+    )
+  }
+
+  #genes starting with "\\.", ENSG, or a regex pattern like XX000000
+  if ("dotFilter" %in% filters) {
+    GenesToFilterOut <- c(
+      GenesToFilterOut,
+      which(
+        str_starts(geneNames, "\\.") |
+        str_starts(geneNames, "ENSG") |
+        str_detect(geneNames, "^[A-Z]{2}\\d{6}")
+      )
+    )
+  }
+
+  #remove duplicate indices
+  GenesToFilterOut <- unique(GenesToFilterOut)
+
+  #return filtered dataframe
+  if (length(GenesToFilterOut) > 0) {
+    filtered_df <- df[-GenesToFilterOut, , drop = FALSE]
+  } else {
+    filtered_df <- df  # No genes to filter, return original
+  }
+
+  list(
+    counts=filtered_df,
+    filtered=setdiff(rownames(df), rownames(filtered_df))
+  )
+}
+```
+
+# PRINCIPAL GENES ALGO
+```{r principal-genes-algo}
+principalgenes <- function(count_matrix, pcs, filters) {
+  data <- genes_filter(count_matrix, filters)$counts
+  repeat {                                    # drop zero cells / zero-variance genes until stable
+    zc <- which(colSums(data) == 0); if (length(zc)) data <- data[, -zc]
+    zr <- which(apply(data, 1, var, na.rm = TRUE) == 0); if (length(zr)) data <- data[-zr, ]
+    if (!length(zc) && !length(zr)) break
+  }
+  pca <- prcomp_irlba(t(data), n = pcs, retx = TRUE, center = TRUE, scale. = TRUE)
+  loadings <- abs(pca$rotation); rownames(loadings) <- rownames(data)
+  prop_var <- pca$sdev^2 / sum(pca$sdev^2)
+  percent_cont <- sweep(loadings, 2, colSums(loadings), "/")
+  tot_contr <- rowSums(sweep(percent_cont, 2, prop_var, "*"))
+  if (any(!is.finite(tot_contr))) stop("Contribution calculation produced NA/Inf values.")
+  list(top_genes = sort(tot_contr, decreasing = TRUE), count_matrix = data)
+}
+```
+
+# Helpers
+```{r helpers}
+# Save a plot as both LZW TIFF and JPEG (file_stub = path without extension)
+save_plot_both <- function(plot, file_stub, width = PLOT_WIDTH, height = PLOT_HEIGHT) {
+  ggsave(filename = paste0(file_stub, ".tif"), plot = plot, dpi = PLOT_DPI,
+         width = width, height = height, units = "in",
+         device = "tiff", compression = "lzw", type = "cairo", bg = "white")
+  ggsave(filename = paste0(file_stub, ".jpg"), plot = plot, dpi = PLOT_DPI,
+         width = width, height = height, units = "in",
+         device = "jpeg", quality = 100, type = "cairo", bg = "white")
+}
+
+# Clustering sensitivity of the top TOP_N principal genes for each number of PCs
+run_varpcs <- function(cfg) {
+  count_matrix <- read.csv(file.path(INPUT_DIR, cfg$counts), row.names = 1)
+  rownames(count_matrix) <- gsub("-", "_", rownames(count_matrix))
+  colnames(count_matrix) <- gsub("\\.", "-", colnames(count_matrix))
+
+  truth <- read.csv(file.path(INPUT_DIR, cfg$labels))
+  truth$cell <- gsub("\\.", "-", truth$cell)
+
+  base  <- principalgenes(count_matrix, pcs = 2, filters = FILTERS)
+  truth <- truth[match(colnames(base$count_matrix), truth$cell), ]
+  true_labels_vector <- setNames(as.numeric(factor(truth$label, levels = unique(truth$label))), truth$cell)
+  k_cls <- max(true_labels_vector)
+
+  acc <- numeric(length(N_PCS))
+  for (i in seq_along(N_PCS)) {
+    set.seed(SEED)
+    pg <- principalgenes(count_matrix, pcs = N_PCS[i], filters = FILTERS)
+    submat <- pg$count_matrix[names(pg$top_genes)[1:TOP_N], ]
+    clusters <- skmeans(t(log2(submat + 1)), k = k_cls, control = list(verbose = FALSE))$cluster
+    acc[i] <- as.numeric(clustSensitivity(clusters, true_labels_vector, as.character(1:k_cls))[1, 2])
+    message("PCs = ", N_PCS[i], " -> accuracy = ", round(acc[i], 3))
+  }
+
+  data.frame(n_pcs = N_PCS, accuracy = acc)
+}
+
+make_varpcs_plot <- function(df) {
+  ggplot(df, aes(n_pcs, accuracy)) +
+    geom_point(colour = "orange", size = 2) +
+    geom_smooth(method = "loess", formula = y ~ x, colour = "blue") +
+    ylim(0, 1) +
+    labs(x = "Principal Component n", y = "Clustering Sensitivity") +
+    theme_gray(base_size = 10, base_family = FONT_FAMILY)
+}
+```
+
+# Run all datasets
+```{r run-all}
+for (name in names(DATASETS)) {
+  message("==================== ", name, " ====================")
+  df <- run_varpcs(DATASETS[[name]])
+  p  <- make_varpcs_plot(df)
+  print(p)
+  save_plot_both(p, file.path(OUT_DIR, paste0(name, "_accuracy_vs_nPCs")))
+}
+```
