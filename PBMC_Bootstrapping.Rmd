@@ -9,223 +9,307 @@ output:
 ```{r setup, include=FALSE}
 ########### DISCLAIMER: AI USED TO AID WITH PLOT FORMATTING FOR PRESENTATION PURPOSES ###############
 
-# Input
-INPUT_DIR <- "Filtered_Input"   # folder (relative to project root) holding count matrices and label files
-
-# Plot appearance
-FONT_FAMILY     <- "Arial"
-LEGEND_POSITION <- c(1, 0)  # cartesian coordinates. Range from 0 to 1
-PLOT_DPI        <- 300
-PLOT_WIDTH      <- 5        # inches
-PLOT_HEIGHT     <- 4
-SHOW_LEGEND     <- TRUE     # TRUE = draw legend on plots, FALSE = no legend
-
 knitr::opts_chunk$set(echo = TRUE)
 knitr::opts_chunk$set(
-  dpi        = PLOT_DPI,
-  fig.width  = PLOT_WIDTH,
-  fig.height = PLOT_HEIGHT
+  dpi = 300,
+  fig.width = 5,   # 1500 pixels / 300 dpi
+  fig.height = 4   # 1200 pixels / 300 dpi
 )
 ```
 
-# Install R packages
+#Install R packages
 ```{r install-packages}
-pkgs <- c("here", "ggplot2", "dplyr", "Seurat", "skmeans", "mclust", "tidyr", "ggrepel", "stringr")
+pkgs <- c("here", "ggplot2", "dplyr", "Seurat", "skmeans", "mclust", "tidyr", "ggrepel", "stringr", "igraph")
 to_install <- setdiff(pkgs, rownames(installed.packages()))
 if (length(to_install)) {
   install.packages(to_install)
 }
-
 for (p in pkgs) library(p, character.only = TRUE)
 ```
 
+#Source code
 ```{r source}
 source(here("Principal_Genes.R"))
 source(here("clSensitivity.R"))
-```
+OUT_ROOT   <- here("Bootstrapping")
+EXPORT_DIR <- here("Data_Hold", "Bootstrapping")
+dir.create(OUT_ROOT, recursive = TRUE, showWarnings = FALSE)
+dir.create(EXPORT_DIR, recursive = TRUE, showWarnings = FALSE)
 
-# Output directories
-```{r output-dirs}
-data_dir <- here("Data_Hold", "Bootstrapping")
-plot_dir <- here("Bootstrapping")
-dir.create(data_dir, recursive = TRUE, showWarnings = FALSE)
-dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
-```
+#plot appearance
+FONT_FAMILY     <- "Arial"
+LEGEND_POSITION <- c(1, 0)  #cartesian coordiates. Range from 0 to 1
+PLOT_DPI        <- 300
+PLOT_WIDTH      <- 5 #inches
+PLOT_HEIGHT     <- 4
 
-# Helper functions
-```{r helpers}
-# Cumulative PG gene lists: for each threshold, the smallest set of top genes
-# whose cumulative score (in %) reaches that threshold. NULL if never reached.
-build_pg_lists <- function(top_genes, thresholds) {
-  cum_pct <- cumsum(top_genes) * 100
-  lapply(thresholds, function(t) {
-    idx <- which(cum_pct >= t)[1]
-    if (is.na(idx)) NULL else names(top_genes)[seq_len(idx)]
-  })
+base_theme <- function(show_legend = FALSE) {
+  theme_minimal(base_size = 10, base_family = FONT_FAMILY) +
+    theme(
+      legend.position             = if (show_legend) "inside" else "none",
+      legend.position.inside      = LEGEND_POSITION,
+      legend.justification.inside = LEGEND_POSITION,
+      legend.box.margin           = margin(4, 4, 4, 4),
+      legend.title                = element_blank(),
+      legend.background           = element_rect(fill = alpha("white", 0.8), colour = NA)
+    )
 }
 
-# Seurat dispersion-ranked HVGs (descending), computed on the given counts
-rank_hvgs <- function(counts) {
-  so <- CreateSeuratObject(counts = as.matrix(counts))
-  Idents(so) <- "All_Cells"
-  so <- NormalizeData(so, verbose = FALSE)
-  so <- FindVariableFeatures(so, selection.method = "dispersion",
-                             nfeatures = nrow(counts), verbose = FALSE)  # dispersion = log(variance/mean)
-  disp <- so[["RNA"]]@meta.data$vf_disp_data_mvp.dispersion
-  names(disp) <- rownames(counts)
-  disp[is.na(disp)] <- 0
-  names(sort(disp, decreasing = TRUE))
-}
+#Save a plot as TIFF and JPG
+save_plot <- function(plot, out_dir, name, suffix,
+                      width = PLOT_WIDTH, height = PLOT_HEIGHT) {
+  stem <- file.path(out_dir, paste0(name, "_", suffix))
 
-# skmeans clustering on a gene set, returns sensitivity
-cluster_sensitivity <- function(genes, counts, labels, k, seed) {
-  mat <- counts[genes, , drop = FALSE]
-  set.seed(seed)
-  cl <- skmeans(x = t(log2(mat + 1)), k = k, control = list(verbose = FALSE))$cluster
-  sens <- clustSensitivity(cl, labels, as.character(1:k))
-  as.numeric(sens[1, 2])
-}
+  ggsave(filename = paste0(stem, ".tif"), plot = plot, dpi = PLOT_DPI,
+         width = width, height = height, units = "in",
+         device = "tiff", compression = "lzw", type = "cairo", bg = "white")
 
-# Mean, SD and 95% t-based CI across subsets (columns = thresholds)
-summarize_accuracy <- function(acc) {
-  n   <- colSums(!is.na(acc))
-  m   <- colMeans(acc, na.rm = TRUE)
-  s   <- apply(acc, 2, sd, na.rm = TRUE)
-  moe <- qt(0.975, df = pmax(n - 1, 1)) * s / sqrt(n)
-  moe[n < 2] <- NA_real_
-  data.frame(n_subsets = n, mean_accuracy = m, sd_accuracy = s,
-             ci_lower = m - moe, ci_upper = m + moe)
-}
-
-save_plot <- function(p, stem) {
-  ggsave(file.path(plot_dir, paste0(stem, ".jpg")), p, device = "jpeg",
-         width = PLOT_WIDTH, height = PLOT_HEIGHT, units = "in", dpi = PLOT_DPI)
-  ggsave(file.path(plot_dir, paste0(stem, ".tif")), p, device = "tiff",
-         width = PLOT_WIDTH, height = PLOT_HEIGHT, units = "in", dpi = PLOT_DPI,
-         compression = "lzw")
+  ggsave(filename = paste0(stem, ".jpg"), plot = plot, dpi = PLOT_DPI,
+         width = width, height = height, units = "in",
+         device = "jpeg", quality = 100, type = "cairo", bg = "white")
 }
 ```
 
-# PBMC DATASET
-## Read in the dataset
+#PBMCs
+##Read in the dataset
 ```{r read-in-data}
-input_file <- here(INPUT_DIR, "PBMCs10xfromSC1.csv")
-truth_file <- here(INPUT_DIR, "PBMCsFromSC1_ClusterLabels.csv")
-name       <- "PBMC"
 
-csv_path  <- file.path(data_dir, paste0(name, "_PG_HVG_Union_Bootstrapping_Sensitivity.csv"))
-plot_stem <- paste0(name, "_PG_HVG_Union_Bootstrapping_Sensitivity")
+input_file<-paste0(here(), "/Filtered_Input/PBMCs_Counts.csv")
+truth_file<-paste0(here(), "/Filtered_Input/PBMCs_Labels.csv")
+name<-"PBMCs"
 
-count_matrix <- read.csv(input_file, check.names = FALSE, row.names = 1)
-
-# True labels, matched to count_matrix columns by cell name
-full_true_labels <- read.csv(truth_file, check.names = FALSE)
-label_levels <- unique(full_true_labels$label)
-true_labels_vector <- setNames(
-  as.numeric(factor(full_true_labels$label, levels = label_levels)),
-  full_true_labels$cell
-)[colnames(count_matrix)]
-names(true_labels_vector) <- colnames(count_matrix)
-if (anyNA(true_labels_vector)) warning("Some cells in count_matrix have no true label.")
-k_cls <- max(true_labels_vector, na.rm = TRUE)
+count_matrix<-read.csv(input_file, check.names = FALSE, row.names = 1)
 ```
 
-## Subsample 80% of cells, run gene selection + skmeans on each subset
-```{r subsampled-gene-selection-and-clustering}
-thresholds  <- seq(10, 50, by = 2)
-n_subsets   <- 5
-subset_frac <- 0.8
-seeds       <- c(12345, 54672, 44182, 72198, 98230)
+##Get principal genes and highlight them on the log_var_mean_plot
+```{r principal-genes-running}
 
-if (file.exists(csv_path)) {
-  message("Found existing ", csv_path, " -- skipping computation and loading it.")
-  plot_df1 <- read.csv(csv_path)
-} else {
-  all_cells   <- colnames(count_matrix)
-  subset_size <- floor(subset_frac * length(all_cells))
-  n_thr       <- length(thresholds)
+row_means<-rowMeans(count_matrix, na.rm=TRUE)
+row_var<- apply(count_matrix, 1, var, na.rm=TRUE)
 
-  # rows = subsets, columns = thresholds
-  acc_pg <- acc_hvg <- acc_union <- matrix(NA_real_, n_subsets, n_thr)
-  ngenes_pg <- ngenes_union <- matrix(NA_real_, n_subsets, n_thr)
+log_var_mean_df<-tibble(
+  gene_id=rownames(count_matrix),
+  log_mean = log10(row_means +  1),
+  log_var = log10(row_var + 1)
+)
 
-  for (r in seq_len(n_subsets)) {
-    message("Subset ", r, " of ", n_subsets)
-    set.seed(seeds[r])
-    cell_subset <- sample(all_cells, subset_size)
-    sub_counts  <- count_matrix[, cell_subset]
-    sub_labels  <- true_labels_vector[cell_subset]
+set.seed(12345)
+principal_genes_results <- principalgenes(count_matrix, cut = 1, filters = c("riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter"))
+filtered_counts<-principal_genes_results$count_matrix
+top_100_genes<-names(principal_genes_results$top_genes[1:50])
+```
+##PCA PLOT
+```{r plot-pca}
+PC1_and_PC2<-as.data.frame(principal_genes_results$rotated_output$x, row.names = colnames(filtered_counts))
 
-    # Gene selection on this subset only
-    set.seed(seeds[r])
-    pg_res <- principalgenes(sub_counts, cut = 1,
-                             filters = c("riboFilter", "mtFilter", "gmFilter", "rikFilter", "dotFilter"))
-    pg_lists   <- build_pg_lists(pg_res$top_genes, thresholds)
-    hvg_ranked <- rank_hvgs(sub_counts)
+#get true labels
+full_true_labels<-read.csv(truth_file, check.names = FALSE)
+full_true_labels$numeric_labels<-as.numeric(factor(
+  full_true_labels$label,
+  levels = unique(full_true_labels$label)
+))
+true_labels<-subset(full_true_labels, cell %in% colnames(filtered_counts))
+PC1_and_PC2$labels<-true_labels$label
+PC1_and_PC2$numeric_labels <- as.numeric(factor(
+  PC1_and_PC2$labels,
+  levels = unique(true_labels$label)
+))
+```
 
-    for (j in seq_len(n_thr)) {
-      pg_genes <- pg_lists[[j]]
-      if (is.null(pg_genes)) {
-        message("  threshold ", thresholds[j], " not reached in subset ", r)
-        next
-      }
-      hvg_genes   <- hvg_ranked[seq_along(pg_genes)]   # size-matched to PG
-      union_genes <- union(pg_genes, hvg_genes)
+##BUILD CUMULATIVE GENE LISTS BY THRESHOLD
+```{r build-cumulative-gene-lists}
 
-      ngenes_pg[r, j]    <- length(pg_genes)
-      ngenes_union[r, j] <- length(union_genes)
+thresholds <- seq(10, 50, by = 2)
 
-      acc_pg[r, j]    <- cluster_sensitivity(pg_genes,    sub_counts, sub_labels, k_cls, seeds[r])
-      acc_hvg[r, j]   <- cluster_sensitivity(hvg_genes,   sub_counts, sub_labels, k_cls, seeds[r])
-      acc_union[r, j] <- cluster_sensitivity(union_genes, sub_counts, sub_labels, k_cls, seeds[r])
+selectedGeneList <- list()
+current_gene_list <- list()
+currentpropsum <- 0
+threshold_index <- 1
+
+for(i in seq_along(principal_genes_results$top_genes)){
+  
+  current_gene_list <- append(current_gene_list, principal_genes_results$top_genes[i])
+  
+  currentpropsum <- currentpropsum + principal_genes_results$top_genes[i] * 100
+  
+  if(currentpropsum >= thresholds[threshold_index]){
+    selectedGeneList[[threshold_index]] <- current_gene_list
+    
+    print(paste("Threshold", thresholds[threshold_index], "reached at index", i))
+    
+    threshold_index <- threshold_index + 1
+    
+    if(threshold_index > length(thresholds)){
+      break
     }
   }
-
-  mean_ng_pg    <- colMeans(ngenes_pg,    na.rm = TRUE)
-  mean_ng_union <- colMeans(ngenes_union, na.rm = TRUE)
-
-  make_block <- function(acc, metric, mean_ng, label) {
-    cbind(data.frame(thresholds = thresholds, metric = metric,
-                     mean_num_genes = mean_ng,
-                     label_val = if (label) round(mean_ng) else NA),
-          summarize_accuracy(acc))
-  }
-
-  plot_df1 <- bind_rows(
-    make_block(acc_pg,    "PG_sensitivity",  mean_ng_pg,    TRUE),
-    make_block(acc_hvg,   "HVG_sensitivity", mean_ng_pg,    FALSE),
-    make_block(acc_union, "PG_HVG_Union",    mean_ng_union, TRUE)
-  )
-
-  write.csv(plot_df1, csv_path, row.names = FALSE)
 }
 
-plot_df1$metric <- factor(plot_df1$metric,
-                          levels = c("PG_sensitivity", "HVG_sensitivity", "PG_HVG_Union"))
+num_genes <- list()
+for (i in seq_along(selectedGeneList)){
+  num_genes[[i]]<-length(selectedGeneList[[i]])
+}
+num_genes<-unlist(num_genes)
+
+true_labels_vector <- setNames(PC1_and_PC2$numeric_labels, row.names(PC1_and_PC2))
+k_cls <- max(true_labels_vector)
 ```
 
-## Plot mean clustering sensitivity vs cumulative score with 95% CI
-```{r plot-subsampled-accuracy}
-show_legend <- SHOW_LEGEND
+##BUILD HVG GENE LISTS (SEURAT), MATCHED TO THE SAME THRESHOLDS AS PG
+```{r build-hvg-gene-lists}
+library(Seurat)
 
-p <- ggplot(plot_df1, aes(x = thresholds, y = mean_accuracy, color = metric)) +
+seuratObject <- CreateSeuratObject(counts = as.matrix(count_matrix))
+Idents(seuratObject) <- "All_Cells"
+norm_seuratObject <- NormalizeData(seuratObject)
+seuratObject <- FindVariableFeatures(norm_seuratObject, selection.method = "dispersion", nfeatures = length(rownames(count_matrix))) #dispersion value = log(variance/mean)
+
+
+scored_hvg <- seuratObject[["RNA"]]@meta.data$vf_disp_data_mvp.dispersion
+names(scored_hvg) <- rownames(count_matrix)
+scored_hvg[is.na(scored_hvg)] <- 0
+scored_hvg <- sort(decreasing = TRUE, scored_hvg)
+HVGs <- names(scored_hvg) #descending-order HVG gene names, aligned with count_matrix rownames
+
+# Build HVG gene lists sized to match the number of genes selected by PG at each threshold
+HVGGeneList <- list()
+for (j in seq_along(num_genes)) {
+  HVGGeneList[[j]] <- HVGs[1:num_genes[j]]
+}
+```
+
+##BUILD UNION (PG + HVG) GENE LISTS AT EACH THRESHOLD
+```{r build-union-gene-lists}
+UnionGeneList <- list()
+for (j in seq_along(selectedGeneList)) {
+  UnionGeneList[[j]] <- unique(union(names(selectedGeneList[[j]]), HVGs[1:num_genes[j]]))
+}
+union_num_genes <- as.integer(sapply(UnionGeneList, length))
+```
+
+##SK_MEANS CLUSTERING ON RANDOM 80% CELL SUBSETS FOR EACH GENE-SELECTION METHOD
+```{r sk-means-subsampled-accuracy}
+n_subsets <- 5
+subset_frac <- 0.8
+seeds <- c(12345, 54672, 44182, 72198, 98230)
+
+all_cells <- colnames(count_matrix)
+subset_size <- floor(subset_frac * length(all_cells))
+
+# Matrices to hold accuracy: rows = subsets, columns = threshold levels
+accuracy_matrix_pg    <- matrix(NA_real_, nrow = n_subsets, ncol = length(selectedGeneList))
+accuracy_matrix_hvg   <- matrix(NA_real_, nrow = n_subsets, ncol = length(HVGGeneList))
+accuracy_matrix_union <- matrix(NA_real_, nrow = n_subsets, ncol = length(UnionGeneList))
+
+for (r in 1:n_subsets){
+  set.seed(seeds[r])
+  cell_subset <- sample(all_cells, subset_size)
+  sub_true_labels <- true_labels_vector[cell_subset]
+
+  print(paste("subset:", r))
+  for (j in seq_along(selectedGeneList)){
+    # Principal Genes
+    submat_pg <- count_matrix[names(selectedGeneList[[j]]), cell_subset]
+    set.seed(seeds[r])
+    sub_cluster_pg <- skmeans(x = t(log2(submat_pg + 1)), k = k_cls, control = list(verbose = FALSE))$cluster
+    sub_sens_pg <- clustSensitivity(sub_cluster_pg, sub_true_labels, as.character(1:k_cls))
+    accuracy_matrix_pg[r, j] <- as.numeric(sub_sens_pg[1, 2])
+
+    # Seurat HVGs
+    submat_hvg <- count_matrix[HVGGeneList[[j]], cell_subset]
+    set.seed(seeds[r])
+    sub_cluster_hvg <- skmeans(x = t(log2(submat_hvg + 1)), k = k_cls, control = list(verbose = FALSE))$cluster
+    sub_sens_hvg <- clustSensitivity(sub_cluster_hvg, sub_true_labels, as.character(1:k_cls))
+    accuracy_matrix_hvg[r, j] <- as.numeric(sub_sens_hvg[1, 2])
+
+    # PG / HVG Union
+    submat_union <- count_matrix[UnionGeneList[[j]], cell_subset]
+    set.seed(seeds[r])
+    sub_cluster_union <- skmeans(x = t(log2(submat_union + 1)), k = k_cls, control = list(verbose = FALSE))$cluster
+    sub_sens_union <- clustSensitivity(sub_cluster_union, sub_true_labels, as.character(1:k_cls))
+    accuracy_matrix_union[r, j] <- as.numeric(sub_sens_union[1, 2])
+
+    print(paste0(j, "th threshold clustering done"))
+  }
+}
+
+summarize_accuracy <- function(accuracy_matrix, n_subsets) {
+  mean_accuracy   <- colMeans(accuracy_matrix)
+  sd_accuracy     <- apply(accuracy_matrix, 2, sd)
+  se_accuracy     <- sd_accuracy / sqrt(n_subsets)
+  margin_of_error <- qt(0.975, df = n_subsets - 1) * se_accuracy
+  data.frame(
+    mean_accuracy   = as.numeric(mean_accuracy),
+    sd_accuracy     = as.numeric(sd_accuracy),
+    margin_of_error = as.numeric(margin_of_error),
+    ci_lower        = as.numeric(mean_accuracy - margin_of_error),
+    ci_upper        = as.numeric(mean_accuracy + margin_of_error)
+  )
+}
+
+pg_summary    <- summarize_accuracy(accuracy_matrix_pg, n_subsets)
+hvg_summary   <- summarize_accuracy(accuracy_matrix_hvg, n_subsets)
+union_summary <- summarize_accuracy(accuracy_matrix_union, n_subsets)
+
+points_sk <- data.frame(
+  thresholds        = as.numeric(thresholds),
+  num_genes         = as.integer(num_genes),
+  union_num_genes   = as.integer(union_num_genes),
+  PG_mean           = pg_summary$mean_accuracy,
+  PG_ci_lower       = pg_summary$ci_lower,
+  PG_ci_upper       = pg_summary$ci_upper,
+  HVG_mean          = hvg_summary$mean_accuracy,
+  HVG_ci_lower      = hvg_summary$ci_lower,
+  HVG_ci_upper      = hvg_summary$ci_upper,
+  Union_mean        = union_summary$mean_accuracy,
+  Union_ci_lower    = union_summary$ci_lower,
+  Union_ci_upper    = union_summary$ci_upper
+)
+
+# "PLOT CLUSTERING RESULTS COMPARING HVGS AND CUMULATIVE SCORE"
+plot_df1 <- bind_rows(
+  data.frame(thresholds = points_sk$thresholds, num_genes = points_sk$num_genes,
+             union_num_genes = points_sk$union_num_genes,
+             mean_accuracy = points_sk$PG_mean, ci_lower = points_sk$PG_ci_lower,
+             ci_upper = points_sk$PG_ci_upper, metric = "PG_sensitivity"),
+  data.frame(thresholds = points_sk$thresholds, num_genes = points_sk$num_genes,
+             union_num_genes = points_sk$union_num_genes,
+             mean_accuracy = points_sk$HVG_mean, ci_lower = points_sk$HVG_ci_lower,
+             ci_upper = points_sk$HVG_ci_upper, metric = "HVG_sensitivity"),
+  data.frame(thresholds = points_sk$thresholds, num_genes = points_sk$num_genes,
+             union_num_genes = points_sk$union_num_genes,
+             mean_accuracy = points_sk$Union_mean, ci_lower = points_sk$Union_ci_lower,
+             ci_upper = points_sk$Union_ci_upper, metric = "PG_HVG_Union")
+)
+
+plot_df1$metric <- factor(plot_df1$metric,
+                           levels = c("PG_sensitivity", "HVG_sensitivity", "PG_HVG_Union"))
+plot_df1$label_val <- NA
+plot_df1$label_val[plot_df1$metric == "PG_sensitivity"] <- plot_df1$num_genes[plot_df1$metric == "PG_sensitivity"]
+plot_df1$label_val[plot_df1$metric == "PG_HVG_Union"] <- plot_df1$union_num_genes[plot_df1$metric == "PG_HVG_Union"]
+
+write.csv(plot_df1, file = file.path(paste0(EXPORT_DIR, "/", name, "_PG_HVG_Union_CumulativeScore_Subsampled_Accuracy.csv")))
+```
+
+##PLOT MEAN CLUSTERING SENSITIVITY VS CUMULATIVE SCORE WITH 95% CI (PG, HVG, UNION)
+```{r plot-subsampled-accuracy}
+p<-ggplot(plot_df1, aes(x = thresholds, y = mean_accuracy, color = metric)) +
   geom_point(size = 2) +
   geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), width = 0.5) +
 
-  # PG labels (mean # genes across subsets)
+  # PG labels
   geom_text(
     data = subset(plot_df1, metric == "PG_sensitivity"),
     aes(label = label_val),
-    color = "#1BB7D8", vjust = +2, size = 3, check_overlap = TRUE,
-    family = FONT_FAMILY, show.legend = FALSE
+    color = "#1BB7D8", vjust = +2, size = 3, check_overlap = TRUE
   ) +
 
-  # Union labels (mean # genes across subsets)
+  # Union labels
   geom_text(
     data = subset(plot_df1, metric == "PG_HVG_Union"),
     aes(label = label_val),
-    color = "darkgreen", vjust = -2, size = 3, check_overlap = TRUE,
-    family = FONT_FAMILY, show.legend = FALSE
+    color = "#2C9F45", vjust = -2, size = 3, family = FONT_FAMILY,
+              check_overlap = TRUE
   ) +
 
   geom_smooth(
@@ -234,7 +318,7 @@ p <- ggplot(plot_df1, aes(x = thresholds, y = mean_accuracy, color = metric)) +
     se = FALSE
   ) +
   scale_y_continuous(limits = c(0, 1)) +
-  labs(x = "Cumulative GPS (%)", y = "Clustering Sensitivity", title = NULL) +
+  labs(x = "Cumulative GPS (%)", y = "Mean Clustering Sensitivity", title = NULL) +
   scale_color_manual(
     breaks = c("PG_sensitivity", "HVG_sensitivity", "PG_HVG_Union"),
     values = c(
@@ -248,16 +332,7 @@ p <- ggplot(plot_df1, aes(x = thresholds, y = mean_accuracy, color = metric)) +
       "PG_HVG_Union"    = "HVG_PG_Union"
     )
   ) +
-  theme_minimal(base_family = FONT_FAMILY) +
-  theme(
-    legend.position             = if (show_legend) "inside" else "none",
-    legend.position.inside      = LEGEND_POSITION,
-    legend.justification.inside = LEGEND_POSITION,
-    legend.box.margin           = margin(4, 4, 4, 4),
-    legend.title                = element_blank(),
-    legend.background           = element_rect(fill = alpha("white", 0.8), colour = NA)
-  )
-
-print(p)
-save_plot(p, plot_stem)
+  base_theme(show_legend = FALSE)
+p
+save_plot(p, OUT_ROOT, name, "PG_HVG_Union_CumulativeScore_Subsampled_Sensitivity")
 ```
